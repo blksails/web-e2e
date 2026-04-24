@@ -1,0 +1,17 @@
+node_modules/
+.auth/
+.env
+.env.local
+test-results/
+reports/
+recordings/*.ts
+!recordings/.gitkeep
+playwright-report/
+blob-report/
+*.log
+src-tauri/target/
+src-tauri/gen/
+src-tauri/Cargo.lock
+.DS_Store
+Thumbs.db
+.desktop-config.json

@@ -1,0 +1,43 @@
+{
+  "name": "web-e2e",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "BlackSail webapp Playwright E2E suite — SOP regression, tester recordings, and automated reports.",
+  "scripts": {
+    "postinstall": "playwright install chromium",
+    "preflight": "tsx scripts/preflight.ts",
+    "pretest": "pnpm preflight",
+    "pretest:smoke": "pnpm preflight",
+    "test": "playwright test",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:sop": "playwright test tests/sop",
+    "test:recorded": "playwright test tests/recorded",
+    "test:any": "playwright test --config playwright.any.config.ts",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui --ui-host=127.0.0.1",
+    "install-browsers": "playwright install --with-deps chromium",
+    "record": "tsx scripts/record.ts",
+    "import": "tsx scripts/import-recording.ts",
+    "report": "playwright show-report reports/playwright-html",
+    "report:dashboard": "tsx scripts/generate-report.ts",
+    "report:open": "pnpm report:dashboard && start \"\" reports/index.html",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "node --test --import tsx scripts/__tests__/generate-report.test.ts scripts/__tests__/import-recording.test.ts",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "desktop": "tauri dev",
+    "desktop:build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@playwright/test": "^1.48.0",
+    "@tauri-apps/cli": "^2",
+    "@types/node": "^20.14.0",
+    "dotenv": "^16.4.5",
+    "eslint": "^9.20.1",
+    "tsx": "^4.20.4",
+    "typescript": "^5.7.3"
+  }
+}

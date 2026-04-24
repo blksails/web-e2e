@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BlackSail E2E 控制台</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-logo">E2E</div>
+        <div class="brand-text">
+          <div class="brand-title">BlackSail</div>
+          <div class="brand-sub">E2E 控制台</div>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" data-view="dashboard">概览</button>
+        <button class="nav-item" data-view="run">运行测试</button>
+        <button class="nav-item" data-view="record">录制与导入</button>
+        <button class="nav-item" data-view="reports">报告</button>
+        <button class="nav-item" data-view="docs">文档</button>
+      </nav>
+      <div class="env-indicator" id="env-indicator">环境检查中…</div>
+    </aside>
+
+    <main class="main">
+      <!-- Dashboard -->
+      <section class="view active" data-view="dashboard">
+        <header class="view-header">
+          <h1>概览</h1>
+          <p class="muted">启动应用后先在这里检查环境；绿灯齐全就能进"运行测试"。</p>
+        </header>
+
+        <!-- 找不到项目：首要提示 -->
+        <div class="card error-card" id="no-project-card" style="display:none">
+          <h3 class="tight">没找到 e2e 项目目录</h3>
+          <p class="muted tight">应用需要指向一个包含 <code>package.json</code> + <code>playwright.config.ts</code> 的项目目录。</p>
+          <p class="tight"><strong>怎么修：</strong></p>
+          <ol class="tight">
+            <li>最快：在项目目录里跑 <code>pnpm desktop</code> 启动开发模式</li>
+            <li>打包分发场景：给系统设环境变量 <code>E2E_PROJECT_ROOT=/your/path/to/web-e2e</code>，再重开应用
+              <ul class="tight"><li>Mac: <code>launchctl setenv E2E_PROJECT_ROOT "/Users/you/workcode/web-e2e"</code></li>
+              <li>Windows: <code>setx E2E_PROJECT_ROOT "C:\workcode\web-e2e"</code></li></ul>
+            </li>
+          </ol>
+        </div>
+
+        <!-- 首次使用向导：仅当依赖缺失时显示 -->
+        <div class="card setup-card" id="setup-card" style="display:none">
+          <div class="setup-head">
+            <div>
+              <h3 class="tight">首次使用：一键准备测试环境</h3>
+              <p class="muted tight">检测到还没准备好测试依赖。点下面按钮，我会按顺序帮你跑：</p>
+              <ol class="tight">
+                <li><code>pnpm install</code> — 安装 JS 依赖（含 Playwright）</li>
+                <li><code>pnpm install-browsers</code> — 下载 Chromium 测试浏览器（首次约 200MB）</li>
+              </ol>
+              <p class="muted tight">全程不需要开终端。首次大约 3–6 分钟；之后再开就秒进。</p>
+            </div>
+            <button id="btn-setup" class="primary large">一键准备测试环境</button>
+          </div>
+        </div>
+
+        <div class="cards" id="env-cards"></div>
+
+        <div class="card" id="env-form-card">
+          <h3>第二步：填测试账号</h3>
+          <p class="muted tight">直接填下面的表单；保存后会写进项目根的 <code>.env.local</code>（已存在则保留注释与其他字段，只更新 key）。</p>
+
+          <div class="env-form">
+            <div class="form-row">
+              <label>E2E_BASE_URL <span class="muted">（测试目标域名）</span></label>
+              <input id="env-E2E_BASE_URL" placeholder="https://web-beta.apps.blksails.cn" />
+            </div>
+            <div class="form-row">
+              <label>E2E_ENV</label>
+              <input id="env-E2E_ENV" placeholder="staging" />
+            </div>
+            <div class="form-row">
+              <label>E2E_EXPECTED_COMPANY_ID <span class="muted">（租户闸门）</span></label>
+              <input id="env-E2E_EXPECTED_COMPANY_ID" placeholder="1" />
+            </div>
+            <div class="form-row">
+              <label>E2E_ADMIN_EMAIL <strong>*</strong></label>
+              <input id="env-E2E_ADMIN_EMAIL" type="email" placeholder="admin@example.com" />
+            </div>
+            <div class="form-row">
+              <label>E2E_ADMIN_PASSWORD <strong>*</strong></label>
+              <div class="inline">
+                <input id="env-E2E_ADMIN_PASSWORD" type="password" placeholder="••••••••" />
+                <button type="button" class="toggle-pw" data-target="env-E2E_ADMIN_PASSWORD">显示</button>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>E2E_MEMBER_EMAIL <span class="muted">（可选，成员流程）</span></label>
+              <input id="env-E2E_MEMBER_EMAIL" type="email" placeholder="member@example.com" />
+            </div>
+            <div class="form-row">
+              <label>E2E_MEMBER_PASSWORD <span class="muted">（可选）</span></label>
+              <div class="inline">
+                <input id="env-E2E_MEMBER_PASSWORD" type="password" placeholder="••••••••" />
+                <button type="button" class="toggle-pw" data-target="env-E2E_MEMBER_PASSWORD">显示</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="inline" style="margin-top:12px">
+            <button id="btn-save-env" class="primary">保存 .env.local</button>
+            <button id="btn-reload-env">重新读取</button>
+            <button data-open=".env.example">查看 .env.example</button>
+            <span id="env-save-hint" class="muted" style="margin-left:8px"></span>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>准备好之后</h3>
+          <ul class="tight">
+            <li>切到「运行测试」点「冒烟 @smoke」快速跑一轮看是否打通</li>
+            <li>要录制新流程，去「录制与导入」面板，填一个用例名点启动</li>
+            <li>所有报告会落在「报告」面板里，双击打开即可</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- Run -->
+      <section class="view" data-view="run">
+        <header class="view-header">
+          <h1>运行测试</h1>
+          <p class="muted">直接调用工程中既有的 pnpm 脚本，不会额外安装 Playwright 依赖。</p>
+        </header>
+        <!-- 跑指定测试文件 -->
+        <div class="card run-spec-card">
+          <h3>跑指定测试文件</h3>
+          <div class="form-row">
+            <label>测试文件 <span class="muted">（默认定位到"导入目标目录"；也可选 tests/ 下任意 .spec.ts）</span></label>
+            <div class="inline">
+              <input id="spec-file" placeholder="tests/recorded/xxx.recorded.spec.ts" readonly />
+              <button id="btn-pick-spec" data-from="imports">从导入目录选</button>
+              <button id="btn-pick-spec-rec" data-from="recordings">从录制目录选</button>
+              <button id="btn-clear-spec">清空</button>
+            </div>
+            <div class="muted tight" id="spec-warn"></div>
+          </div>
+          <div class="form-row">
+            <label>可选参数</label>
+            <div class="inline spec-opts">
+              <label class="check"><input type="checkbox" id="spec-headed" /> --headed（带浏览器看着跑）</label>
+              <label class="check"><input type="checkbox" id="spec-ui" /> --ui（交互调试）</label>
+              <label class="check"><input type="checkbox" id="spec-debug" /> --debug（单步）</label>
+              <span class="muted tight">额外 <input id="spec-grep" placeholder="--grep 正则，可留空" style="width:260px" /></span>
+            </div>
+          </div>
+          <div class="inline">
+            <button id="btn-run-spec" class="primary">运行该文件</button>
+            <span class="muted" id="spec-cmd-preview"></span>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="action" data-job="test:smoke" data-args="test:smoke">
+            <span class="action-title">冒烟 @smoke</span>
+            <span class="action-sub">PR 必跑 · 目标 &lt; 5min</span>
+          </button>
+          <button class="action" data-job="test:sop" data-args="test:sop">
+            <span class="action-title">SOP 回归</span>
+            <span class="action-sub">tests/sop 全量</span>
+          </button>
+          <button class="action" data-job="test:recorded" data-args="test:recorded">
+            <span class="action-title">录制用例</span>
+            <span class="action-sub">tests/recorded/@recorded</span>
+          </button>
+          <button class="action" data-job="test:all" data-args="test">
+            <span class="action-title">全量回归</span>
+            <span class="action-sub">pnpm test</span>
+          </button>
+          <button class="action" data-job="test:headed" data-args="test:headed">
+            <span class="action-title">带浏览器跑</span>
+            <span class="action-sub">pnpm test:headed</span>
+          </button>
+          <button class="action" data-job="test:ui" data-args="test:ui">
+            <span class="action-title">Playwright UI</span>
+            <span class="action-sub">交互调试模式</span>
+          </button>
+          <button class="action" data-job="typecheck" data-args="typecheck">
+            <span class="action-title">TypeScript 检查</span>
+            <span class="action-sub">tsc --noEmit</span>
+          </button>
+          <button class="action" data-job="lint" data-args="lint">
+            <span class="action-title">Lint</span>
+            <span class="action-sub">eslint .</span>
+          </button>
+        </div>
+        <div class="console-wrap">
+          <div class="console-head">
+            <span>实时日志</span>
+            <span class="right">
+              <span id="job-status" class="pill pill-idle">空闲</span>
+              <button id="btn-stop" class="danger" disabled>停止</button>
+              <button id="btn-clear">清空</button>
+            </span>
+          </div>
+          <pre id="console" class="console"></pre>
+        </div>
+      </section>
+
+      <!-- Record -->
+      <section class="view" data-view="record">
+        <header class="view-header">
+          <h1>录制与导入</h1>
+          <p class="muted">等同于手动跑 <code>pnpm record</code> / <code>pnpm import</code>。</p>
+        </header>
+
+        <!-- 最近录制：快速回放 -->
+        <div class="card recent-card" id="recent-card" style="display:none">
+          <div class="inline" style="justify-content:space-between">
+            <h3 class="tight">最近录制</h3>
+            <button id="btn-refresh-recent">刷新</button>
+          </div>
+          <p class="muted tight">录制完成后不用导入也能立即试跑；下面列出 <code id="recent-dir-label">recordings/</code> 最近 10 条。</p>
+          <ul class="recent-list" id="recent-list"></ul>
+          <p class="muted tight"><strong>提示</strong>：立即试跑用的是衍生配置（<code>playwright.any.config.ts</code>），只加载登录态，不保证过 tenantGuard。要正式入库仍走「导入」再跑 <code>test:recorded</code>。</p>
+        </div>
+
+        <!-- 目录配置 -->
+        <div class="card dir-card">
+          <h3>保存位置</h3>
+          <div class="form-row">
+            <label>录制保存目录 <span class="muted">（codegen 生成的 <code>*.spec.ts</code> 落在这里）</span></label>
+            <div class="inline">
+              <input id="cfg-recordings-dir" placeholder="recordings" />
+              <button id="btn-pick-rec-dir">选目录…</button>
+              <button data-open-dyn="recordings">打开</button>
+            </div>
+            <div class="muted tight">当前解析：<code id="rec-dir-abs">—</code></div>
+          </div>
+          <div class="form-row">
+            <label>导入目标目录 <span class="muted">（规范化后落到这里，成为正式用例）</span></label>
+            <div class="inline">
+              <input id="cfg-imports-dir" placeholder="tests/recorded" />
+              <button id="btn-pick-imp-dir">选目录…</button>
+              <button data-open-dyn="imports">打开</button>
+            </div>
+            <div class="muted tight">当前解析：<code id="imp-dir-abs">—</code></div>
+          </div>
+          <div class="inline">
+            <button id="btn-save-dirs" class="primary">保存目录设置</button>
+            <span id="dirs-save-hint" class="muted" style="margin-left:8px"></span>
+          </div>
+          <p class="muted tight">提示：相对路径以项目根为基准；绝对路径也支持。设置落在项目根的 <code>.desktop-config.json</code>（已 gitignore）。</p>
+        </div>
+
+        <div class="card">
+          <h3>录制新流程</h3>
+          <div class="form-row">
+            <label>用例名（英文短横线）</label>
+            <input id="rec-name" placeholder="例如：invite-member" />
+          </div>
+          <div class="form-row">
+            <label>起始路径</label>
+            <input id="rec-path" value="/settings/members" />
+          </div>
+          <button id="btn-record" class="primary">启动 codegen 录制</button>
+          <p class="muted tight">Chromium 会打开带登录态的页面；你手动操作时，codegen 会把动作写成 <code><span id="rec-sample-path">recordings</span>/&lt;name&gt;-&lt;timestamp&gt;.spec.ts</code>。</p>
+        </div>
+        <div class="card">
+          <h3>导入到 <code id="imp-target-label">tests/recorded</code>/</h3>
+          <div class="form-row">
+            <label>录制文件</label>
+            <div class="inline">
+              <input id="imp-file" placeholder="recordings/xxx.spec.ts" readonly />
+              <button id="btn-pick-file">选择文件…</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>SOP 分组</label>
+            <select id="imp-sop">
+              <option value="sop1">sop1</option>
+              <option value="sop2">sop2</option>
+              <option value="sop3">sop3</option>
+              <option value="sop4">sop4</option>
+              <option value="sop5">sop5</option>
+            </select>
+          </div>
+          <button id="btn-import" class="primary">导入</button>
+        </div>
+      </section>
+
+      <!-- Reports -->
+      <section class="view" data-view="reports">
+        <header class="view-header">
+          <h1>报告</h1>
+          <p class="muted">每次跑完会在 <code>reports/</code> 下产出这些产物。</p>
+        </header>
+        <div class="report-grid">
+          <div class="card">
+            <h3>综合仪表盘</h3>
+            <p class="muted">覆盖率 / 耗时 / 建议</p>
+            <div class="inline">
+              <button class="primary" data-open="reports/index.html">打开</button>
+              <button data-job="report:dashboard" data-args="report:dashboard">重新生成</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>Playwright 官方报告</h3>
+            <p class="muted">失败用例 trace/视频可点进查看</p>
+            <button class="primary" data-open="reports/playwright-html/index.html">打开</button>
+          </div>
+          <div class="card">
+            <h3>原始数据</h3>
+            <p class="muted">机器可读</p>
+            <div class="inline">
+              <button data-open="reports/playwright.json">playwright.json</button>
+              <button data-open="reports/suggestions.md">suggestions.md</button>
+              <button data-open="reports/junit.xml">junit.xml</button>
+            </div>
+          </div>
+          <div class="card">
+            <h3>失败产物</h3>
+            <p class="muted">trace / video / screenshot</p>
+            <button data-open="test-results">打开 test-results/</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Docs -->
+      <section class="view" data-view="docs">
+        <header class="view-header">
+          <h1>文档</h1>
+          <p class="muted">项目根 <code>docs/</code> 目录下的所有 Markdown。</p>
+        </header>
+        <div class="docs-layout">
+          <ul class="doc-list" id="doc-list"></ul>
+          <article class="doc-content" id="doc-content">
+            <p class="muted">从左侧选一篇开始阅读。</p>
+          </article>
+        </div>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
