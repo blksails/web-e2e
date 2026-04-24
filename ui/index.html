@@ -33,18 +33,40 @@
           <p class="muted">启动应用后先在这里检查环境；绿灯齐全就能进"运行测试"。</p>
         </header>
 
-        <!-- 找不到项目：首要提示 -->
+        <!-- 项目路径：始终显示，方便切换 -->
+        <div class="card project-card" id="project-card">
+          <h3 class="tight">项目路径</h3>
+          <p class="muted tight">本应用所有测试都在这个目录里跑；没配过或想换目录都在这里改。优先级：环境变量 > 本处保存 > 已解压默认模板 > 自动扫描。</p>
+          <div class="form-row">
+            <label>当前使用的项目根</label>
+            <div class="inline">
+              <input id="proj-root-current" readonly placeholder="（未解析）" />
+              <button data-open-dyn="project-root" id="btn-open-proj">打开</button>
+            </div>
+          </div>
+          <div class="form-row">
+            <label>切换到其它目录</label>
+            <div class="inline">
+              <input id="proj-root-input" placeholder="例如：C:\workcode\web-e2e" />
+              <button id="btn-pick-proj">浏览…</button>
+              <button id="btn-save-proj" class="primary">保存</button>
+              <button id="btn-clear-proj">清除保存</button>
+            </div>
+            <div class="muted tight" id="proj-save-hint"></div>
+          </div>
+          <div class="form-row" id="template-row" style="display:none">
+            <label>或使用打包时附带的默认模板</label>
+            <div class="inline">
+              <button id="btn-extract-template" class="primary">解压默认模板并使用</button>
+              <span class="muted tight" id="template-hint">首次点会把模板拷到 app_data_dir/template-project，并设为项目路径</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 找不到项目：附加提示 -->
         <div class="card error-card" id="no-project-card" style="display:none">
-          <h3 class="tight">没找到 e2e 项目目录</h3>
-          <p class="muted tight">应用需要指向一个包含 <code>package.json</code> + <code>playwright.config.ts</code> 的项目目录。</p>
-          <p class="tight"><strong>怎么修：</strong></p>
-          <ol class="tight">
-            <li>最快：在项目目录里跑 <code>pnpm desktop</code> 启动开发模式</li>
-            <li>打包分发场景：给系统设环境变量 <code>E2E_PROJECT_ROOT=/your/path/to/web-e2e</code>，再重开应用
-              <ul class="tight"><li>Mac: <code>launchctl setenv E2E_PROJECT_ROOT "/Users/you/workcode/web-e2e"</code></li>
-              <li>Windows: <code>setx E2E_PROJECT_ROOT "C:\workcode\web-e2e"</code></li></ul>
-            </li>
-          </ol>
+          <h3 class="tight">还没有可用的项目路径</h3>
+          <p class="muted tight">上面"项目路径"卡里选一个含 <code>package.json</code> + <code>playwright.config</code> 的目录；没有现成工程的话点「解压默认模板并使用」。</p>
         </div>
 
         <!-- 首次使用向导：仅当依赖缺失时显示 -->

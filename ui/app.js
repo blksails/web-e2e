@@ -22,7 +22,7 @@ $$('.nav-item').forEach((btn) => {
     $$('.nav-item').forEach((b) => b.classList.toggle('active', b === btn));
     $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === view));
     if (view === 'docs') loadDocsList();
-    if (view === 'dashboard') { loadEnv(); loadEnvForm(); }
+    if (view === 'dashboard') { loadEnv().then(loadProjectRootCard); loadEnvForm(); }
     if (view === 'record') loadConfigAndDirs();
   });
 });
@@ -438,7 +438,10 @@ $('#btn-save-dirs').addEventListener('click', async () => {
 $$('[data-open-dyn]').forEach((btn) => {
   btn.addEventListener('click', async () => {
     const which = btn.dataset.openDyn;
-    const target = which === 'recordings' ? resolvedRecordingsAbs : resolvedImportsAbs;
+    let target = '';
+    if (which === 'recordings') target = resolvedRecordingsAbs;
+    else if (which === 'imports') target = resolvedImportsAbs;
+    else if (which === 'project-root') target = (lastEnv && lastEnv.project_root) || '';
     if (!target) return alert('路径未就绪');
     try { await invoke('open_in_shell', { target }); } catch (e) { alert(String(e)); }
   });
@@ -472,6 +475,93 @@ $('#btn-import').addEventListener('click', () => {
   if (!file) { alert('请先选择录制文件'); return; }
   const impDir = ($('#cfg-imports-dir').value || 'tests/recorded').trim();
   startJob(`import:${sop}`, `import -- --file ${file} --sop ${sop} --outDir ${impDir}`);
+});
+
+// ---------- 项目路径卡片 ----------
+async function loadProjectRootCard() {
+  // 当前解析到的根
+  const cur = (lastEnv && lastEnv.project_root) || '';
+  $('#proj-root-current').value = cur;
+
+  // 如果 input 没人改过，帮填当前根作为编辑起点（方便局部改）
+  const input = $('#proj-root-input');
+  if (!input.value || !input.dataset.touched) {
+    input.value = cur;
+  }
+
+  // 模板可用性：只有打包过的安装包会 true；dev 模式默认 false
+  try {
+    const has = await invoke('template_available');
+    $('#template-row').style.display = has ? '' : 'none';
+  } catch {
+    $('#template-row').style.display = 'none';
+  }
+}
+
+$('#proj-root-input').addEventListener('input', (e) => {
+  e.target.dataset.touched = '1';
+});
+
+$('#btn-pick-proj').addEventListener('click', async () => {
+  const cur = $('#proj-root-input').value || (lastEnv && lastEnv.project_root) || '';
+  const p = await pickDirectory(cur);
+  if (p) {
+    $('#proj-root-input').value = p;
+    $('#proj-root-input').dataset.touched = '1';
+  }
+});
+
+$('#btn-save-proj').addEventListener('click', async () => {
+  const hint = $('#proj-save-hint');
+  const path = $('#proj-root-input').value.trim();
+  if (!path) { hint.textContent = '请先选一个目录'; hint.className = 'muted saved-err'; return; }
+  hint.textContent = '保存中…'; hint.className = 'muted';
+  try {
+    await invoke('set_project_root', { path });
+    hint.textContent = '已保存 — 重新扫描环境'; hint.className = 'muted saved-flash';
+    $('#proj-root-input').dataset.touched = '';
+    // 项目根变了 — 全面刷新
+    await loadEnv();
+    await loadEnvForm();
+    await loadConfigAndDirs();
+    await loadProjectRootCard();
+  } catch (e) {
+    hint.textContent = '保存失败：' + e; hint.className = 'muted saved-err';
+  }
+});
+
+$('#btn-clear-proj').addEventListener('click', async () => {
+  const hint = $('#proj-save-hint');
+  hint.textContent = '清除中…'; hint.className = 'muted';
+  try {
+    await invoke('clear_project_root');
+    hint.textContent = '已清除，将按自动规则再次扫描'; hint.className = 'muted saved-flash';
+    $('#proj-root-input').dataset.touched = '';
+    await loadEnv();
+    await loadEnvForm();
+    await loadConfigAndDirs();
+    await loadProjectRootCard();
+  } catch (e) {
+    hint.textContent = '清除失败：' + e; hint.className = 'muted saved-err';
+  }
+});
+
+$('#btn-extract-template').addEventListener('click', async () => {
+  const hint = $('#template-hint');
+  hint.textContent = '解压中（第一次约 1–3 秒）…'; hint.className = 'muted';
+  try {
+    const path = await invoke('extract_template', { force: false });
+    hint.textContent = '已解压到：' + path;
+    hint.className = 'muted saved-flash';
+    // 使用它作为项目根
+    await loadEnv();
+    await loadEnvForm();
+    await loadConfigAndDirs();
+    await loadProjectRootCard();
+  } catch (e) {
+    hint.textContent = '解压失败：' + e;
+    hint.className = 'muted saved-err';
+  }
 });
 
 // ---------- .env.local 表单 ----------
@@ -562,6 +652,7 @@ function renderMarkdown(src) {
   const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
   while (i < lines.length) {
+    const startI = i;
     let line = lines[i];
 
     // 水平线
@@ -571,8 +662,8 @@ function renderMarkdown(src) {
     const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) { out.push(`<h${h[1].length}>${inline(esc(h[2]))}</h${h[1].length}>`); i++; continue; }
 
-    // 表格
-    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:-|]+\|?\s*$/.test(lines[i+1])) {
+    // 表格（必须有 header + 分隔符两行）
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?[\s:\-|]+\|?\s*$/.test(lines[i+1])) {
       const headers = splitRow(line);
       i += 2;
       const rows = [];
@@ -626,11 +717,24 @@ function renderMarkdown(src) {
 
     // 段落：收集连续非空非特殊行
     const para = [];
-    while (i < lines.length && lines[i].trim() && !/^(#|```|>|\s*[-*+]\s+|\s*\d+\.\s+|---)/.test(lines[i]) && !/^\s*\|.*\|\s*$/.test(lines[i])) {
+    while (i < lines.length && lines[i].trim() && !/^(#|```|>|\s*[-*+]\s+|\s*\d+\.\s+|---)/.test(lines[i])) {
+      // 下一行看起来像"合法表格开头"（当前行像行 + 下一行是分隔符），就把流程让给表格处理器
+      const maybeTable = /^\s*\|.*\|\s*$/.test(lines[i])
+        && i + 1 < lines.length
+        && /^\s*\|?[\s:\-|]+\|?\s*$/.test(lines[i+1]);
+      if (maybeTable) break;
       para.push(lines[i]);
       i++;
     }
-    if (para.length) out.push(`<p>${inline(esc(para.join(' ')))}</p>`);
+    if (para.length) {
+      out.push(`<p>${inline(esc(para.join(' ')))}</p>`);
+      continue;
+    }
+
+    // 安全网：走到这里说明没有任何分支消费了当前行 —— 作为普通文本兜底，强制前进一行
+    if (line.trim()) out.push(`<p>${inline(esc(line))}</p>`);
+    i++;
+    if (i === startI) { i = startI + 1; } // 最后一道保险，杜绝死循环
   }
 
   // 代码块还原
@@ -647,12 +751,13 @@ function renderMarkdown(src) {
 
   function inline(s) {
     // 内联代码
-    s = s.replace(/`([^`]+?)`/g, (_, c) => `<code>${c}</code>`);
-    // 加粗 + 斜体
-    s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong>$1</strong>');
-    s = s.replace(/(^|\W)\*([^*\s][^*]*?[^*\s]|[^*\s])\*(?=\W|$)/g, '$1<em>$2</em>');
+    s = s.replace(/`([^`\n]+?)`/g, (_, c) => `<code>${c}</code>`);
+    // 加粗：**text**
+    s = s.replace(/\*\*([^*\n]+?)\*\*/g, '<strong>$1</strong>');
+    // 斜体：简化版，不使用回溯风险高的 lookaround；只匹配 *text*，不跨行
+    s = s.replace(/\*([^*\n]+?)\*/g, '<em>$1</em>');
     // 链接
-    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
+    s = s.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, (_, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
     return s;
   }
 }
@@ -660,6 +765,7 @@ function renderMarkdown(src) {
 // ---------- 启动 ----------
 window.addEventListener('DOMContentLoaded', async () => {
   await loadEnv();
+  await loadProjectRootCard();
   await loadEnvForm();
   await loadConfigAndDirs();
   try {

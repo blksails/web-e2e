@@ -11,19 +11,22 @@
 
 ## 1. 给测试专员：装好就能用
 
-如果你拿到的是工程师已经打包好的 `.msi` / `.dmg` / `.AppImage`，直接双击装，
-装完打开就行 —— 下面"开发者篇"可以跳过。
+如果你拿到的是工程师已经打包好的 `.msi` / `.dmg` / `.AppImage`，
+直接双击装、打开即可 —— 下面"开发者篇"可以跳过。
 
-第一次打开会看到醒目的「一键准备测试环境」卡片，点一下：
+**首次打开三步：**
 
-1. 应用会自动跑 `pnpm install` 把 JS 依赖装好
-2. 然后自动跑 `pnpm install-browsers` 把 Playwright 的 Chromium 下下来（约 200MB）
-3. 全程看着进度条，不需要你开任何终端
+1. 概览面板顶上「项目路径」里点**「解压默认模板并使用」**
+   —— 应用会把自带的测试工程拷到 `app_data_dir/template-project/`，
+   之后所有测试都在这里跑
+2. 下面会出现「一键准备测试环境」卡片，点一下
+   —— 自动跑 `pnpm install` + `pnpm install-browsers`（首次约 3–6 分钟）
+3. 再下面「填测试账号」表单 —— 填 company_id=1 管理员邮箱/密码，保存
 
-全程首次大约 3–6 分钟，之后再开是秒进。
+全程不需要开任何终端。第二次之后秒进。
 
-> 还需要你做的一件小事：把 `.env.example` 复制成 `.env.local`，
-> 填入 company_id=1 的管理员邮箱/密码。概览面板有按钮直接打开这两个文件。
+> **想用自己的 git 仓库而非默认模板？** 在「项目路径」里点「浏览…」选你的仓库目录 → 保存。
+> 应用立刻切到那个仓库里跑所有命令。
 
 ---
 
@@ -86,6 +89,13 @@ pnpm desktop:build              # 打包分发（Windows .msi / macOS .dmg / Lin
 左侧导航栏分 5 个面板：
 
 ### 概览
+- **项目路径卡**：当前用的项目根 + 切换入口。优先级从高到低：
+  1. 环境变量 `E2E_PROJECT_ROOT`
+  2. 用户在 UI 点「保存」的全局配置（存在 `app_data_dir/desktop-global.json`）
+  3. 已解压的默认模板（`app_data_dir/template-project/`）
+  4. 自动扫描（当前目录 / exe 目录向上查找含 `package.json + playwright.config` 的目录）
+
+  可以点「浏览…」手动挑一个目录保存；也可以点「解压默认模板并使用」把安装包里附带的模板拷到 `app_data_dir`（仅打包版本存在此按钮，dev 模式里隐藏）
 - **一键准备测试环境**按钮：仅当依赖缺失时显示；点下去会串行跑 `pnpm install` 与 `pnpm install-browsers`，全程可见进度
 - **测试账号表单**：直接在界面上填 `E2E_ADMIN_EMAIL` / `E2E_ADMIN_PASSWORD` 等；保存会写进项目根 `.env.local`，保留注释与其他字段，密码默认隐藏
 - 一眼看到：项目路径、运行平台、pnpm 路径、`node_modules` 是否装过、Playwright 是否就绪、`.env.local` 是否填过、历史报告等
@@ -151,6 +161,7 @@ apps/web-e2e/
 │   ├── tauri.conf.json
 │   ├── capabilities/
 │   ├── icons/
+│   ├── template-project/   # 打包时 stage-template 产出的默认模板（gitignored）
 │   └── src/
 │       ├── main.rs
 │       └── lib.rs          # Tauri commands：run_pnpm / list_docs / read_doc ...
@@ -158,11 +169,30 @@ apps/web-e2e/
 │   ├── index.html
 │   ├── app.js
 │   └── style.css
+├── scripts/
+│   └── stage-template.ts   # 把当前工程打包成模板资源
 └── docs/                   # 文档（桌面端会读取这里渲染）
     ├── DESKTOP-APP.md      # 本文
     ├── TESTER-RECORDING-GUIDE.md
     └── ...
 ```
+
+### 模板打包原理
+
+`pnpm desktop:build`（以及 `pnpm desktop`）会通过 Tauri 的 `beforeBuildCommand` 自动先跑
+`pnpm stage-template`，把当前工程下的 `tests/`、`pages/`、`fixtures/`、
+`scripts/`、`docs/`、配置文件和 `.env.example` 拷到 `src-tauri/template-project/`。
+然后 Tauri 把这个目录作为资源打进安装包。
+
+安装后首次启动，用户点「解压默认模板并使用」，Rust 侧的 `extract_template` 命令把
+资源目录 (`<install>/resources/template-project`) 递归拷到 `app_data_dir/template-project/`
+（这是用户可写目录），并把全局配置 `desktop-global.json` 的 `project_root` 指向它。
+
+之后所有命令 —— `pnpm install` / `pnpm test` / `pnpm record` —— 都以这个目录为 cwd。
+
+**排除清单**：`node_modules/`、`src-tauri/`、`ui/`、`.auth/`、`.env`、`.env.local`、
+`reports/`、`test-results/`、`recordings/*.ts` 都不会进模板。
+`scripts/stage-template.ts` 里的 `INCLUDE` 白名单是真实情况。
 
 ---
 

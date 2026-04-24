@@ -4,7 +4,9 @@
   "version": "0.1.0",
   "identifier": "cn.blksails.webe2e.console",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../ui",
+    "beforeDevCommand": "pnpm stage-template",
+    "beforeBuildCommand": "pnpm stage-template"
   },
   "app": {
     "withGlobalTauri": true,
@@ -27,6 +29,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "resources": ["template-project/**/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

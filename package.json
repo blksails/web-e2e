@@ -28,7 +28,8 @@
     "lint:fix": "eslint . --fix",
     "desktop": "tauri dev",
     "desktop:build": "tauri build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "stage-template": "tsx scripts/stage-template.ts"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.10.0",

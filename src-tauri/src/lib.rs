@@ -1,15 +1,22 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
+
+/// 应用层持久路径 —— 在 setup() 里填好一次，之后同步读取。
+struct AppPaths {
+    app_data_dir: PathBuf,
+    resource_dir: PathBuf,
+}
+static APP_PATHS: OnceCell<AppPaths> = OnceCell::new();
 
 /// 活跃子进程表：job_id -> Child。
 /// 用于 kill_job 停止正在跑的任务。
@@ -39,9 +46,21 @@ struct RunArgs {
 /// 2. 当前工作目录向上最多 5 级查找 package.json+playwright.config
 /// 3. 可执行文件所在目录向上查找（Mac .app bundle 场景）
 /// 4. 报错：空路径，上层会感知并提示用户
+static PROJECT_ROOT_CACHE: Lazy<StdMutex<Option<PathBuf>>> =
+    Lazy::new(|| StdMutex::new(None));
+
 fn project_root() -> PathBuf {
-    static CACHE: Lazy<PathBuf> = Lazy::new(resolve_project_root_inner);
-    CACHE.clone()
+    let mut guard = PROJECT_ROOT_CACHE.lock().unwrap();
+    if guard.is_none() {
+        *guard = Some(resolve_project_root_inner());
+    }
+    guard.as_ref().cloned().unwrap_or_default()
+}
+
+fn invalidate_project_root() {
+    if let Ok(mut guard) = PROJECT_ROOT_CACHE.lock() {
+        *guard = None;
+    }
 }
 
 fn looks_like_project(dir: &Path) -> bool {
@@ -67,20 +86,36 @@ fn walk_up_for_project(mut dir: PathBuf, depth: usize) -> Option<PathBuf> {
 }
 
 fn resolve_project_root_inner() -> PathBuf {
-    // 1. 显式环境变量
+    // 1. 显式环境变量（最高优先，便于工程师调试）
     if let Some(env) = std::env::var_os("E2E_PROJECT_ROOT") {
         let p = PathBuf::from(env);
         if looks_like_project(&p) {
             return p;
         }
     }
-    // 2. cwd 向上最多 5 级（dev 模式足够）
+    // 2. 用户在 UI 保存的全局配置
+    if let Some(saved) = read_global_config()
+        .and_then(|c| c.project_root)
+        .map(PathBuf::from)
+    {
+        if looks_like_project(&saved) {
+            return saved;
+        }
+    }
+    // 3. 已解压的默认模板（只在桌面构建后首次点"用默认模板"后存在）
+    if let Some(paths) = APP_PATHS.get() {
+        let tpl = paths.app_data_dir.join("template-project");
+        if looks_like_project(&tpl) {
+            return tpl;
+        }
+    }
+    // 4. cwd 向上最多 5 级（dev 模式：pnpm desktop 从项目根跑）
     if let Ok(cwd) = std::env::current_dir() {
         if let Some(p) = walk_up_for_project(cwd, 5) {
             return p;
         }
     }
-    // 3. 可执行文件目录向上最多 6 级（Mac .app/Contents/MacOS 下需要多爬几级）
+    // 5. 可执行文件目录向上最多 6 级（Mac .app/Contents/MacOS 下需要多爬几级）
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
             if let Some(p) = walk_up_for_project(parent.to_path_buf(), 6) {
@@ -89,6 +124,133 @@ fn resolve_project_root_inner() -> PathBuf {
         }
     }
     PathBuf::new()
+}
+
+// ---------- 全局桌面配置：跟当前项目解耦，按用户账号存在 app_data_dir ----------
+
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+struct GlobalConfig {
+    #[serde(default)]
+    project_root: Option<String>,
+}
+
+fn global_config_path() -> Option<PathBuf> {
+    APP_PATHS
+        .get()
+        .map(|p| p.app_data_dir.join("desktop-global.json"))
+}
+
+fn read_global_config() -> Option<GlobalConfig> {
+    let path = global_config_path()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+fn write_global_config(cfg: &GlobalConfig) -> Result<(), String> {
+    let path = global_config_path().ok_or_else(|| "app_data_dir 未初始化".to_string())?;
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let text = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_global_config() -> GlobalConfig {
+    read_global_config().unwrap_or_default()
+}
+
+#[tauri::command]
+fn set_project_root(path: String) -> Result<(), String> {
+    let trimmed = path.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("路径不能为空".into());
+    }
+    let p = PathBuf::from(&trimmed);
+    if !p.exists() {
+        return Err(format!("路径不存在：{}", trimmed));
+    }
+    if !looks_like_project(&p) {
+        return Err(
+            "该目录不像是 e2e 项目：找不到 package.json + playwright.config 或 tests/ 目录。"
+                .into(),
+        );
+    }
+    let mut cfg = read_global_config().unwrap_or_default();
+    cfg.project_root = Some(trimmed);
+    write_global_config(&cfg)?;
+    invalidate_project_root();
+    Ok(())
+}
+
+#[tauri::command]
+fn clear_project_root() -> Result<(), String> {
+    let mut cfg = read_global_config().unwrap_or_default();
+    cfg.project_root = None;
+    write_global_config(&cfg)?;
+    invalidate_project_root();
+    Ok(())
+}
+
+#[tauri::command]
+fn template_available() -> bool {
+    APP_PATHS.get().map_or(false, |p| {
+        let tpl = p.resource_dir.join("template-project");
+        tpl.is_dir() && tpl.join("package.json").exists()
+    })
+}
+
+/// 把资源里的 template-project 解压到 app_data_dir/template-project，
+/// 并把全局配置的 project_root 指向它。若已解压过则复用（不覆盖用户编辑）。
+#[tauri::command]
+fn extract_template(force: Option<bool>) -> Result<String, String> {
+    let paths = APP_PATHS
+        .get()
+        .ok_or_else(|| "app_data_dir 未初始化".to_string())?;
+    let src = paths.resource_dir.join("template-project");
+    if !src.is_dir() {
+        return Err(
+            "当前构建不含默认模板（只有 `pnpm desktop:build` 产出的安装包会把模板打进去）。"
+                .into(),
+        );
+    }
+    let dest = paths.app_data_dir.join("template-project");
+    let should_copy = force.unwrap_or(false) || !looks_like_project(&dest);
+    if should_copy {
+        if dest.exists() && force.unwrap_or(false) {
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+        copy_recursive(&src, &dest).map_err(|e| format!("拷贝模板失败：{e}"))?;
+    }
+
+    let mut cfg = read_global_config().unwrap_or_default();
+    cfg.project_root = Some(dest.to_string_lossy().into_owned());
+    write_global_config(&cfg)?;
+    invalidate_project_root();
+
+    Ok(dest.to_string_lossy().into_owned())
+}
+
+fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
+    if src.is_dir() {
+        std::fs::create_dir_all(dest)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = match entry.file_name().into_string() {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            copy_recursive(&path, &dest.join(&name))?;
+        }
+    } else if src.is_file() {
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::copy(src, dest)?;
+    }
+    Ok(())
 }
 
 fn pnpm_program() -> &'static str {
@@ -908,9 +1070,31 @@ pub fn run() {
             list_recordings,
             latest_recording,
             pick_file,
-            pick_directory
+            pick_directory,
+            get_global_config,
+            set_project_root,
+            clear_project_root,
+            template_available,
+            extract_template
         ])
         .setup(|app| {
+            // 建立一次性路径上下文：app_data_dir 持久目录 + resource_dir 安装资源目录
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
+            let _ = std::fs::create_dir_all(&app_data_dir);
+            let resource_dir = app
+                .path()
+                .resource_dir()
+                .unwrap_or_else(|_| PathBuf::from("."));
+            let _ = APP_PATHS.set(AppPaths {
+                app_data_dir,
+                resource_dir,
+            });
+            // 路径配置变了，让 project_root 重算
+            invalidate_project_root();
+
             #[cfg(debug_assertions)]
             {
                 if let Some(w) = app.get_webview_window("main") {

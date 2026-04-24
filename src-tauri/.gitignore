@@ -1,3 +1,4 @@
 /target
 /gen
+/template-project
 Cargo.lock
