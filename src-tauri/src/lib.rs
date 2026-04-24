@@ -193,62 +193,179 @@ fn clear_project_root() -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn template_available() -> bool {
-    APP_PATHS.get().map_or(false, |p| {
-        let tpl = p.resource_dir.join("template-project");
-        tpl.is_dir() && tpl.join("package.json").exists()
+fn template_zip_path() -> Option<PathBuf> {
+    APP_PATHS.get().and_then(|p| {
+        // dev 模式 resource_dir 可能不同于 build 模式 — 尝试多个位置
+        for candidate in [
+            p.resource_dir.join("template-project.zip"),
+            p.resource_dir.join("_up_").join("template-project.zip"),
+        ] {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
     })
 }
 
-/// 把资源里的 template-project 解压到 app_data_dir/template-project，
-/// 并把全局配置的 project_root 指向它。若已解压过则复用（不覆盖用户编辑）。
 #[tauri::command]
-fn extract_template(force: Option<bool>) -> Result<String, String> {
+fn template_available() -> bool {
+    template_zip_path().is_some()
+}
+
+/// 在项目根写入一个健壮的 .npmrc（若不存在）。
+/// 用 hoisted 模式规避 Windows 上 pnpm 的 -4094 抖动、深路径、硬链接 AV 误报。
+/// 已存在的 .npmrc 不碰，防止覆盖用户配置。
+#[tauri::command]
+fn ensure_npmrc() -> Result<String, String> {
+    let root = project_root();
+    if root.as_os_str().is_empty() {
+        return Err("项目目录未找到".into());
+    }
+    let path = root.join(".npmrc");
+    if path.exists() {
+        return Ok(format!("保留已有 {}（未改动）", path.display()));
+    }
+    let content = "# Written by BlackSail Desktop to avoid Windows FS flakiness\nnode-linker=hoisted\npackage-import-method=copy\nauto-install-peers=true\nstrict-peer-dependencies=false\n";
+    std::fs::write(&path, content).map_err(|e| format!("写入失败：{e}"))?;
+    Ok(format!("已写入 {}", path.display()))
+}
+
+/// 删除 project_root 下的 node_modules —— 用于"修复安装"时的 clean reinstall。
+/// 只动 node_modules 本身，别的都不碰。
+#[tauri::command]
+fn wipe_node_modules() -> Result<(), String> {
+    let root = project_root();
+    if root.as_os_str().is_empty() {
+        return Err("项目目录未找到".into());
+    }
+    let nm = root.join("node_modules");
+    if !nm.exists() {
+        return Ok(()); // 没得可删，等同成功
+    }
+    if !nm.is_dir() {
+        return Err("node_modules 存在但不是目录".into());
+    }
+    // 安全保险：只允许删 project_root 正下方的 node_modules
+    let parent_ok = nm.parent().map(|p| p == root).unwrap_or(false);
+    if !parent_ok {
+        return Err("node_modules 不在项目根下，已阻止删除".into());
+    }
+    std::fs::remove_dir_all(&nm).map_err(|e| format!("删除失败：{e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+fn default_template_dest() -> Result<String, String> {
+    APP_PATHS
+        .get()
+        .map(|p| p.app_data_dir.join("template-project").to_string_lossy().into_owned())
+        .ok_or_else(|| "app_data_dir 未初始化".to_string())
+}
+
+/// 把资源里的 template-project.zip 解压到指定目录（默认 app_data_dir/template-project），
+/// 并把全局配置的 project_root 指向它。若目标已是 e2e 项目且未强制覆盖则复用。
+///
+/// 参数：
+///   dest_dir: 可选。不给就用 app_data_dir/template-project。
+///   force:    true 时删除已有目录后重新解压；false 且目标已是有效项目则复用。
+#[tauri::command]
+fn extract_template(
+    dest_dir: Option<String>,
+    force: Option<bool>,
+) -> Result<String, String> {
     let paths = APP_PATHS
         .get()
         .ok_or_else(|| "app_data_dir 未初始化".to_string())?;
-    let src = paths.resource_dir.join("template-project");
-    if !src.is_dir() {
-        return Err(
-            "当前构建不含默认模板（只有 `pnpm desktop:build` 产出的安装包会把模板打进去）。"
-                .into(),
-        );
-    }
-    let dest = paths.app_data_dir.join("template-project");
-    let should_copy = force.unwrap_or(false) || !looks_like_project(&dest);
-    if should_copy {
-        if dest.exists() && force.unwrap_or(false) {
-            let _ = std::fs::remove_dir_all(&dest);
+    let zip_path = template_zip_path().ok_or_else(|| {
+        "当前构建不含默认模板（只有 `pnpm desktop:build` 产出的安装包会把模板打进去）。".to_string()
+    })?;
+
+    let dest: PathBuf = match dest_dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(s) => {
+            let p = PathBuf::from(s);
+            if !p.is_absolute() {
+                return Err("目标路径必须是绝对路径".into());
+            }
+            p
         }
-        copy_recursive(&src, &dest).map_err(|e| format!("拷贝模板失败：{e}"))?;
+        None => paths.app_data_dir.join("template-project"),
+    };
+
+    // 安全：不允许解压到文件之上
+    if dest.exists() && dest.is_file() {
+        return Err(format!("{} 已存在且是个文件，不能解压到这里", dest.display()));
     }
 
+    let should_extract = force.unwrap_or(false) || !looks_like_project(&dest);
+    if should_extract {
+        // 目标目录已存在又强制覆盖 → 清空
+        if dest.exists() && force.unwrap_or(false) {
+            std::fs::remove_dir_all(&dest)
+                .map_err(|e| format!("清理目标目录失败：{e}"))?;
+        }
+        // 目标目录已存在且非空（非项目）→ 拒绝，避免误覆盖用户文件
+        if dest.exists() {
+            let is_empty = std::fs::read_dir(&dest)
+                .map_err(|e| format!("读取目标目录失败：{e}"))?
+                .next()
+                .is_none();
+            if !is_empty && !looks_like_project(&dest) {
+                return Err(format!(
+                    "{} 已存在且不是空目录、也不像 e2e 项目；请换一个空目录，或勾选「强制覆盖」。",
+                    dest.display()
+                ));
+            }
+        }
+        std::fs::create_dir_all(&dest).map_err(|e| format!("创建目录失败：{e}"))?;
+        unzip_to(&zip_path, &dest).map_err(|e| format!("解压模板失败：{e}"))?;
+    }
+
+    let abs = dest.canonicalize().unwrap_or(dest.clone());
+    let abs_str = abs.to_string_lossy().into_owned();
+
     let mut cfg = read_global_config().unwrap_or_default();
-    cfg.project_root = Some(dest.to_string_lossy().into_owned());
+    cfg.project_root = Some(abs_str.clone());
     write_global_config(&cfg)?;
     invalidate_project_root();
 
-    Ok(dest.to_string_lossy().into_owned())
+    Ok(abs_str)
 }
 
-fn copy_recursive(src: &Path, dest: &Path) -> std::io::Result<()> {
-    if src.is_dir() {
-        std::fs::create_dir_all(dest)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            let path = entry.path();
-            let name = match entry.file_name().into_string() {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-            copy_recursive(&path, &dest.join(&name))?;
+fn unzip_to(zip_path: &Path, dest: &Path) -> std::io::Result<()> {
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+        // 安全路径：只使用 enclosed_name，拒绝路径穿越
+        let rel = match entry.enclosed_name() {
+            Some(p) => p.to_path_buf(),
+            None => continue,
+        };
+        let out_path = dest.join(&rel);
+
+        if entry.is_dir() || entry.name().ends_with('/') {
+            std::fs::create_dir_all(&out_path)?;
+            continue;
         }
-    } else if src.is_file() {
-        if let Some(parent) = dest.parent() {
+        if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(src, dest)?;
+        let mut out = std::fs::File::create(&out_path)?;
+        std::io::copy(&mut entry, &mut out)?;
+
+        // Unix 权限位还原
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(mode) = entry.unix_mode() {
+                let _ = std::fs::set_permissions(&out_path, std::fs::Permissions::from_mode(mode));
+            }
+        }
     }
     Ok(())
 }
@@ -266,7 +383,6 @@ fn pnpm_program() -> &'static str {
 #[cfg(unix)]
 fn shell_login_path() -> Option<String> {
     use std::process::Command as StdCommand;
-    // 先尝试 SHELL 环境变量指定的 shell，再兜底 zsh/bash
     let mut candidates: Vec<String> = vec![];
     if let Ok(s) = std::env::var("SHELL") {
         if !s.is_empty() {
@@ -291,35 +407,174 @@ fn shell_login_path() -> Option<String> {
     None
 }
 
-/// 构建一份"更完整"的 PATH：登录 shell PATH + 常见 Node/pnpm 安装点 + 系统 PATH。
-#[cfg(unix)]
+/// 版本号按语义顺序排序，挑最新（粗粒度，够用）。只看前三段数字。
+fn version_key(name: &str) -> (u32, u32, u32) {
+    let s = name.trim_start_matches(|c: char| !c.is_ascii_digit());
+    let parts: Vec<u32> = s
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .take(3)
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    let a = parts.first().copied().unwrap_or(0);
+    let b = parts.get(1).copied().unwrap_or(0);
+    let c = parts.get(2).copied().unwrap_or(0);
+    (a, b, c)
+}
+
+/// 扫描目录取最新子目录（按版本号）。返回该子目录路径。
+fn latest_subdir(base: &Path) -> Option<PathBuf> {
+    if !base.is_dir() {
+        return None;
+    }
+    let mut best: Option<(PathBuf, (u32, u32, u32))> = None;
+    for entry in std::fs::read_dir(base).ok()?.flatten() {
+        if !entry.file_type().ok().map_or(false, |t| t.is_dir()) {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let key = version_key(&name);
+        let path = entry.path();
+        match &best {
+            None => best = Some((path, key)),
+            Some((_, bk)) if key > *bk => best = Some((path, key)),
+            _ => {}
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// 收集所有 Node 版本管理器装的 node 可执行文件所在目录（bin 级）。
+fn node_manager_bin_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = vec![];
+
+    // Unix: nvm / volta / fnm
+    #[cfg(unix)]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let h = PathBuf::from(home);
+            let nvm_root = std::env::var_os("NVM_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".nvm"));
+            let nvm_node_dir = nvm_root.join("versions").join("node");
+            if let Some(latest) = latest_subdir(&nvm_node_dir) {
+                let bin = latest.join("bin");
+                if bin.is_dir() { dirs.push(bin); }
+            }
+            // volta shim
+            let volta_bin = h.join(".volta").join("bin");
+            if volta_bin.is_dir() { dirs.push(volta_bin); }
+            // fnm (new layout: ~/.local/share/fnm/node-versions/<ver>/installation/bin)
+            let fnm_base = h.join(".local").join("share").join("fnm").join("node-versions");
+            if let Some(latest) = latest_subdir(&fnm_base) {
+                let bin = latest.join("installation").join("bin");
+                if bin.is_dir() { dirs.push(bin); }
+            }
+            // fnm (legacy: ~/.fnm/node-versions)
+            let fnm_legacy = h.join(".fnm").join("node-versions");
+            if let Some(latest) = latest_subdir(&fnm_legacy) {
+                let bin = latest.join("installation").join("bin");
+                if bin.is_dir() { dirs.push(bin); }
+            }
+        }
+    }
+
+    // Windows: nvm-windows (coreybutler/nvm-windows)
+    #[cfg(windows)]
+    {
+        let candidates: Vec<PathBuf> = [
+            std::env::var_os("NVM_HOME").map(PathBuf::from),
+            std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("nvm")),
+            std::env::var_os("LOCALAPPDATA").map(|a| PathBuf::from(a).join("nvm")),
+            Some(PathBuf::from("C:\\nvm")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        for c in candidates {
+            if let Some(latest) = latest_subdir(&c) {
+                // nvm-windows: C:\Users\...\nvm\v22.1.0\node.exe （node 在目录根，不是 bin）
+                if latest.join("node.exe").is_file() {
+                    dirs.push(latest);
+                }
+            }
+            // nvm-windows 还会把当前激活的版本符号链到 Program Files\nodejs 或 C:\nodejs
+        }
+        // 常见的 node 固定安装位置
+        let fixed = [
+            std::env::var_os("ProgramFiles").map(|p| PathBuf::from(p).join("nodejs")),
+            std::env::var_os("ProgramFiles(x86)").map(|p| PathBuf::from(p).join("nodejs")),
+            Some(PathBuf::from("C:\\nodejs")),
+        ];
+        for f in fixed.into_iter().flatten() {
+            if f.join("node.exe").is_file() {
+                dirs.push(f);
+            }
+        }
+
+        // volta on Windows
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            let volta_bin = PathBuf::from(home).join(".volta").join("bin");
+            if volta_bin.is_dir() { dirs.push(volta_bin); }
+        }
+    }
+
+    dirs
+}
+
+/// 构建一份"更完整"的 PATH：登录 shell PATH + 常见 Node/pnpm 安装点 + Node 版本管理器 + 系统 PATH。
 fn augmented_path() -> String {
     static PATH: Lazy<String> = Lazy::new(|| {
+        let sep = if cfg!(windows) { ";" } else { ":" };
         let mut parts: Vec<String> = vec![];
+
+        #[cfg(unix)]
         if let Some(login) = shell_login_path() {
             parts.push(login);
         }
-        // Mac/Linux 上 pnpm / node 的常见位置
+
+        // Node 版本管理器的 bin 目录
+        for d in node_manager_bin_dirs() {
+            parts.push(d.to_string_lossy().into_owned());
+        }
+
+        #[cfg(unix)]
         if let Some(home) = std::env::var_os("HOME") {
             let h = PathBuf::from(home);
-            let guesses = [
+            for g in [
                 ".local/share/pnpm",
-                ".volta/bin",
                 ".npm-global/bin",
-                ".fnm/aliases/default/bin",
                 ".cargo/bin",
                 ".nix-profile/bin",
-            ];
-            for g in guesses {
+            ] {
                 let p = h.join(g);
                 if p.exists() {
                     parts.push(p.to_string_lossy().into_owned());
                 }
             }
         }
+        #[cfg(unix)]
         for sys in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
             parts.push(sys.to_string());
         }
+
+        #[cfg(windows)]
+        if let Some(home) = std::env::var_os("USERPROFILE") {
+            let h = PathBuf::from(home);
+            for g in [
+                "AppData\\Local\\pnpm",
+                "AppData\\Roaming\\npm",
+                "scoop\\shims",
+                ".cargo\\bin",
+            ] {
+                let p = h.join(g);
+                if p.exists() {
+                    parts.push(p.to_string_lossy().into_owned());
+                }
+            }
+        }
+
         if let Ok(existing) = std::env::var("PATH") {
             if !existing.is_empty() {
                 parts.push(existing);
@@ -327,21 +582,14 @@ fn augmented_path() -> String {
         }
         // 去重（保序）
         let mut seen = std::collections::HashSet::new();
-        parts.retain(|p| seen.insert(p.clone()));
-        parts.join(":")
+        parts.retain(|p| seen.insert(p.to_lowercase()));
+        parts.join(sep)
     });
     PATH.clone()
 }
 
 fn apply_command_env(cmd: &mut Command) {
-    #[cfg(unix)]
-    {
-        cmd.env("PATH", augmented_path());
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = cmd;
-    }
+    cmd.env("PATH", augmented_path());
 }
 
 async fn stream_reader<R>(
@@ -954,6 +1202,36 @@ async fn pick_directory(
 }
 
 #[tauri::command]
+fn open_external_url(url: String) -> Result<(), String> {
+    // 只放行 http/https，避免滥用 start 执行任意东西
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("仅允许 http/https URL".into());
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &url])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&url)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn open_in_shell(target: String) -> Result<(), String> {
     let root = project_root();
     let path = if Path::new(&target).is_absolute() {
@@ -1026,26 +1304,194 @@ fn env_info() -> EnvInfo {
     }
 }
 
-#[cfg(unix)]
-fn detect_pnpm_hint() -> Option<String> {
-    // 用 augmented PATH 下的 which 定位 pnpm，帮助用户排查"启动 pnpm 失败"
+/// 在 augmented_path 上定位某个可执行文件（用于 UI "pnpm / node 路径" 显示）。
+fn find_in_path(exe: &str) -> Option<String> {
     use std::process::Command as StdCommand;
-    let out = StdCommand::new("which")
-        .arg("pnpm")
+    let (finder, args): (&str, Vec<&str>) = if cfg!(windows) {
+        ("where", vec![exe])
+    } else {
+        ("which", vec![exe])
+    };
+    let out = StdCommand::new(finder)
+        .args(&args)
         .env("PATH", augmented_path())
         .output()
         .ok()?;
-    if out.status.success() {
-        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !s.is_empty() {
-            return Some(s);
-        }
+    if !out.status.success() {
+        return None;
     }
-    None
+    let s = String::from_utf8_lossy(&out.stdout);
+    let first = s.lines().next().unwrap_or("").trim();
+    if first.is_empty() { None } else { Some(first.to_string()) }
 }
 
-#[cfg(not(unix))]
-fn detect_pnpm_hint() -> Option<String> { None }
+fn detect_pnpm_hint() -> Option<String> {
+    find_in_path(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" })
+        .or_else(|| find_in_path("pnpm"))
+}
+
+/// 运行某个命令拿 stdout（用 augmented PATH）。失败返回 None。
+fn run_capture(program: &str, args: &[&str]) -> Option<String> {
+    use std::process::Command as StdCommand;
+    let mut cmd = StdCommand::new(program);
+    cmd.args(args).env("PATH", augmented_path());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().ok()?;
+    if out.status.success() {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    } else {
+        None
+    }
+}
+
+#[derive(Serialize)]
+struct NvmVersion {
+    name: String,
+    path: String,
+}
+
+#[derive(Serialize)]
+struct NodeInfo {
+    node_found: bool,
+    node_path: Option<String>,
+    node_version: Option<String>,
+    npm_version: Option<String>,
+    pnpm_found: bool,
+    pnpm_path: Option<String>,
+    pnpm_version: Option<String>,
+    /// 来源标签：system / nvm / nvm-windows / volta / fnm / none
+    source: String,
+    nvm_versions: Vec<NvmVersion>,
+    nvm_kind: Option<String>,           // "nvm-sh" | "nvm-windows" | None
+    /// 对应平台下载页
+    download_url: String,
+}
+
+fn platform_download_url() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "https://nodejs.org/zh-cn/download/prebuilt-installer"
+    } else if cfg!(target_os = "macos") {
+        "https://nodejs.org/zh-cn/download/prebuilt-installer"
+    } else {
+        "https://nodejs.org/zh-cn/download"
+    }
+}
+
+/// 扫描所有能找到的 nvm 已装 Node 版本；返回 (kind, versions)。
+fn scan_nvm_versions() -> (Option<&'static str>, Vec<NvmVersion>) {
+    let mut versions: Vec<NvmVersion> = vec![];
+    #[cfg(unix)]
+    {
+        if let Some(home) = std::env::var_os("HOME") {
+            let h = PathBuf::from(home);
+            let nvm_root = std::env::var_os("NVM_DIR")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| h.join(".nvm"));
+            let node_dir = nvm_root.join("versions").join("node");
+            if node_dir.is_dir() {
+                if let Ok(rd) = std::fs::read_dir(&node_dir) {
+                    for e in rd.flatten() {
+                        if e.file_type().ok().map_or(false, |t| t.is_dir()) {
+                            let path = e.path().join("bin").join("node");
+                            if path.is_file() {
+                                versions.push(NvmVersion {
+                                    name: e.file_name().to_string_lossy().into_owned(),
+                                    path: path.to_string_lossy().into_owned(),
+                                });
+                            }
+                        }
+                    }
+                }
+                versions.sort_by(|a, b| version_key(&b.name).cmp(&version_key(&a.name)));
+                if !versions.is_empty() {
+                    return (Some("nvm-sh"), versions);
+                }
+            }
+        }
+    }
+    #[cfg(windows)]
+    {
+        let candidates: Vec<PathBuf> = [
+            std::env::var_os("NVM_HOME").map(PathBuf::from),
+            std::env::var_os("APPDATA").map(|a| PathBuf::from(a).join("nvm")),
+            std::env::var_os("LOCALAPPDATA").map(|a| PathBuf::from(a).join("nvm")),
+            Some(PathBuf::from("C:\\nvm")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+
+        for c in candidates {
+            if !c.is_dir() { continue; }
+            if let Ok(rd) = std::fs::read_dir(&c) {
+                for e in rd.flatten() {
+                    if !e.file_type().ok().map_or(false, |t| t.is_dir()) { continue; }
+                    let path = e.path().join("node.exe");
+                    if path.is_file() {
+                        versions.push(NvmVersion {
+                            name: e.file_name().to_string_lossy().into_owned(),
+                            path: path.to_string_lossy().into_owned(),
+                        });
+                    }
+                }
+            }
+            if !versions.is_empty() {
+                versions.sort_by(|a, b| version_key(&b.name).cmp(&version_key(&a.name)));
+                return (Some("nvm-windows"), versions);
+            }
+        }
+    }
+    (None, versions)
+}
+
+fn classify_source(node_path: Option<&str>, nvm_kind: Option<&str>) -> String {
+    let Some(p) = node_path else { return "none".into() };
+    let lower = p.to_lowercase();
+    if lower.contains("/.nvm/") || lower.contains("\\nvm\\") {
+        return nvm_kind.unwrap_or("nvm").to_string();
+    }
+    if lower.contains("/.volta/") || lower.contains("\\.volta\\") {
+        return "volta".into();
+    }
+    if lower.contains("/fnm/") || lower.contains("\\fnm\\") {
+        return "fnm".into();
+    }
+    "system".into()
+}
+
+#[tauri::command]
+fn detect_node_env() -> NodeInfo {
+    let node_exe = if cfg!(windows) { "node.exe" } else { "node" };
+    let node_path = find_in_path(node_exe).or_else(|| find_in_path("node"));
+    let node_version = run_capture("node", &["--version"]);
+    let npm_version = run_capture(if cfg!(windows) { "npm.cmd" } else { "npm" }, &["--version"])
+        .or_else(|| run_capture("npm", &["--version"]));
+    let pnpm_path = detect_pnpm_hint();
+    let pnpm_version = run_capture(if cfg!(windows) { "pnpm.cmd" } else { "pnpm" }, &["--version"])
+        .or_else(|| run_capture("pnpm", &["--version"]));
+
+    let (nvm_kind, nvm_versions) = scan_nvm_versions();
+    let source = classify_source(node_path.as_deref(), nvm_kind);
+
+    NodeInfo {
+        node_found: node_path.is_some() && node_version.is_some(),
+        node_path,
+        node_version,
+        npm_version,
+        pnpm_found: pnpm_path.is_some(),
+        pnpm_path,
+        pnpm_version,
+        source,
+        nvm_versions,
+        nvm_kind: nvm_kind.map(String::from),
+        download_url: platform_download_url().to_string(),
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -1075,7 +1521,12 @@ pub fn run() {
             set_project_root,
             clear_project_root,
             template_available,
-            extract_template
+            extract_template,
+            default_template_dest,
+            wipe_node_modules,
+            ensure_npmrc,
+            detect_node_env,
+            open_external_url
         ])
         .setup(|app| {
             // 建立一次性路径上下文：app_data_dir 持久目录 + resource_dir 安装资源目录

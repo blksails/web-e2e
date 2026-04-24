@@ -57,8 +57,14 @@
           <div class="form-row" id="template-row" style="display:none">
             <label>或使用打包时附带的默认模板</label>
             <div class="inline">
-              <button id="btn-extract-template" class="primary">解压默认模板并使用</button>
-              <span class="muted tight" id="template-hint">首次点会把模板拷到 app_data_dir/template-project，并设为项目路径</span>
+              <input id="template-dest" placeholder="解压到此目录（默认 app_data_dir/template-project）" />
+              <button id="btn-pick-template-dest">浏览…</button>
+              <button id="btn-reset-template-dest" title="恢复默认位置">默认</button>
+            </div>
+            <div class="inline" style="margin-top:6px">
+              <label class="check"><input type="checkbox" id="template-force" /> 强制覆盖已有目录</label>
+              <button id="btn-extract-template" class="primary">解压模板并使用</button>
+              <span class="muted tight" id="template-hint"></span>
             </div>
           </div>
         </div>
@@ -69,19 +75,44 @@
           <p class="muted tight">上面"项目路径"卡里选一个含 <code>package.json</code> + <code>playwright.config</code> 的目录；没有现成工程的话点「解压默认模板并使用」。</p>
         </div>
 
+        <!-- Node.js 未找到：红色提示 -->
+        <div class="card error-card" id="no-node-card" style="display:none">
+          <h3 class="tight">找不到 Node.js</h3>
+          <p class="tight">本应用需要 <strong>Node.js 22+</strong> 才能跑 Playwright。下面三种方式任选一种，装完回到此面板点"重新检测"。</p>
+          <div class="inline" style="gap:10px;flex-wrap:wrap;margin-top:8px">
+            <button id="btn-open-node-site" class="primary">打开 Node 官网下载</button>
+            <button id="btn-recheck-node">重新检测</button>
+          </div>
+          <ol class="tight" style="margin-top:12px">
+            <li><strong>最快（推荐测试人员）</strong>：点上面"Node 官网下载"，下载对应系统的安装包，一路下一步</li>
+            <li><strong>开发机 · Mac/Linux</strong>：装 <a href="#" data-ext-url="https://github.com/nvm-sh/nvm#installing-and-updating">nvm</a> →
+              <code>nvm install 22 && nvm use 22</code>，应用会自动识别 <code>~/.nvm/versions/node/</code> 下的版本</li>
+            <li><strong>开发机 · Windows</strong>：装 <a href="#" data-ext-url="https://github.com/coreybutler/nvm-windows/releases">nvm-windows</a> →
+              <code>nvm install 22.10.0 && nvm use 22.10.0</code>，应用会自动识别 <code>%APPDATA%\nvm\</code> 下的版本</li>
+          </ol>
+          <div id="nvm-suggest" style="display:none;margin-top:10px;padding:10px 12px;background:var(--surface-2);border-radius:6px">
+            <div class="muted tight">检测到已装的 nvm 版本（未激活）：</div>
+            <ul class="tight" id="nvm-versions-list"></ul>
+            <p class="muted tight">应用已把这些目录加进子进程的 PATH，理论上可以直接用。点"重新检测"确认。</p>
+          </div>
+        </div>
+
         <!-- 首次使用向导：仅当依赖缺失时显示 -->
         <div class="card setup-card" id="setup-card" style="display:none">
           <div class="setup-head">
             <div>
               <h3 class="tight">首次使用：一键准备测试环境</h3>
-              <p class="muted tight">检测到还没准备好测试依赖。点下面按钮，我会按顺序帮你跑：</p>
+              <p class="muted tight">依次跑两步。全程不需要开终端，首次 3–6 分钟，之后秒进。</p>
               <ol class="tight">
                 <li><code>pnpm install</code> — 安装 JS 依赖（含 Playwright）</li>
-                <li><code>pnpm install-browsers</code> — 下载 Chromium 测试浏览器（首次约 200MB）</li>
+                <li><code>pnpm install-browsers</code> — 下载 Chromium（首次约 200MB）</li>
               </ol>
-              <p class="muted tight">全程不需要开终端。首次大约 3–6 分钟；之后再开就秒进。</p>
+              <p class="muted tight"><strong>装坏了？</strong>点「修复安装」会先清掉 <code>node_modules</code> 再重来。</p>
             </div>
-            <button id="btn-setup" class="primary large">一键准备测试环境</button>
+            <div class="inline" style="flex-direction:column;gap:8px;align-items:stretch">
+              <button id="btn-setup" class="primary large">一键准备测试环境</button>
+              <button id="btn-setup-clean" title="先删 node_modules，再全量 install">修复安装</button>
+            </div>
           </div>
         </div>
 

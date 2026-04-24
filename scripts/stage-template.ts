@@ -9,6 +9,7 @@
  * 被 `pnpm desktop:build`（Tauri `beforeBuildCommand`）自动触发，也可以手动
  * 跑 `pnpm stage-template` 试看。
  */
+import { execFileSync } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { cp, mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve, dirname } from 'node:path';
@@ -17,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
 const DEST = resolve(PROJECT_ROOT, 'src-tauri', 'template-project');
+const ZIP_PATH = resolve(PROJECT_ROOT, 'src-tauri', 'template-project.zip');
 
 // 顶层必须拷贝的文件/目录。相对项目根。
 const INCLUDE: string[] = [
@@ -38,6 +40,7 @@ const INCLUDE: string[] = [
   // 运行期模板
   '.env.example',
   '.gitignore',
+  '.npmrc',
   'README.md',
 ];
 
@@ -113,9 +116,35 @@ async function listOutputs(): Promise<string[]> {
   return items.sort();
 }
 
+async function zipDirectory(): Promise<void> {
+  if (existsSync(ZIP_PATH)) await rm(ZIP_PATH, { force: true });
+  if (process.platform === 'win32') {
+    // PowerShell Compress-Archive 是 Windows 内置，零外部依赖
+    execFileSync(
+      'powershell',
+      [
+        '-NoProfile',
+        '-Command',
+        `Compress-Archive -Path '${DEST}\\*' -DestinationPath '${ZIP_PATH}' -Force`,
+      ],
+      { stdio: 'inherit' },
+    );
+  } else {
+    // Mac/Linux 使用系统 zip —— 几乎都预装；若没装给明确指引
+    try {
+      execFileSync('zip', ['-rq', ZIP_PATH, '.'], { cwd: DEST, stdio: 'inherit' });
+    } catch (e) {
+      throw new Error(
+        `未找到 zip 命令。macOS/Linux 请先装：brew install zip 或 sudo apt install zip。底层错误：${e}`,
+      );
+    }
+  }
+}
+
 async function main(): Promise<void> {
   console.log(`[stage-template] project root: ${PROJECT_ROOT}`);
   console.log(`[stage-template] destination : ${DEST}`);
+  console.log(`[stage-template] zip target  : ${ZIP_PATH}`);
   await reset();
 
   let hit = 0;
@@ -128,6 +157,11 @@ async function main(): Promise<void> {
 
   await ensurePlaceholders();
   await writeReadme();
+
+  console.log(`[stage-template] zipping…`);
+  await zipDirectory();
+  const zipSize = statSync(ZIP_PATH).size;
+  console.log(`[stage-template] zip size: ${(zipSize / 1024).toFixed(1)} KB`);
 
   const top = await listOutputs();
   console.log(`[stage-template] ${hit} copied, ${miss} missing`);

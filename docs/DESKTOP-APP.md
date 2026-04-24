@@ -95,7 +95,11 @@ pnpm desktop:build              # 打包分发（Windows .msi / macOS .dmg / Lin
   3. 已解压的默认模板（`app_data_dir/template-project/`）
   4. 自动扫描（当前目录 / exe 目录向上查找含 `package.json + playwright.config` 的目录）
 
-  可以点「浏览…」手动挑一个目录保存；也可以点「解压默认模板并使用」把安装包里附带的模板拷到 `app_data_dir`（仅打包版本存在此按钮，dev 模式里隐藏）
+  可以点「浏览…」手动挑一个目录保存；也可以**使用打包时附带的默认模板**：
+  - 默认解压位置是 `app_data_dir/template-project/`（隐藏、稳定、不会被用户误删）
+  - 也能在解压前把目标改成任意绝对路径（比如 `D:\workcode\web-e2e`）——按「浏览…」选目录
+  - 若目标目录已存在且有其它内容（非空且不是 e2e 项目），会拒绝执行；勾选「强制覆盖」可先清空再解压
+  - 解压完会自动把这个目录设为项目根
 - **一键准备测试环境**按钮：仅当依赖缺失时显示；点下去会串行跑 `pnpm install` 与 `pnpm install-browsers`，全程可见进度
 - **测试账号表单**：直接在界面上填 `E2E_ADMIN_EMAIL` / `E2E_ADMIN_PASSWORD` 等；保存会写进项目根 `.env.local`，保留注释与其他字段，密码默认隐藏
 - 一眼看到：项目路径、运行平台、pnpm 路径、`node_modules` 是否装过、Playwright 是否就绪、`.env.local` 是否填过、历史报告等

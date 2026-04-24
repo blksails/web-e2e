@@ -29,9 +29,12 @@ $$('.nav-item').forEach((btn) => {
 
 // ---------- 环境信息 ----------
 let lastEnv = null;
+let lastNode = null;
 async function loadEnv() {
   const env = await invoke('env_info');
   lastEnv = env;
+  try { lastNode = await invoke('detect_node_env'); } catch { lastNode = null; }
+  renderNodeCard();
   const cards = $('#env-cards');
   const row = (label, ok, text, hint) => `
     <div class="env-card">
@@ -39,13 +42,15 @@ async function loadEnv() {
       <div class="value"><span class="dot ${ok ? 'ok' : 'bad'}"></span>${text}</div>
       ${hint ? `<div class="muted tight">${hint}</div>` : ''}
     </div>`;
+  const nodeOk = lastNode && lastNode.node_found;
+  const pnpmOk = lastNode && lastNode.pnpm_found;
   cards.innerHTML = [
     row('项目路径', env.project_root_found, env.project_root_found ? `<code>${env.project_root}</code>` : '未找到', env.project_root_found ? '' : '见上方「没找到 e2e 项目目录」提示'),
     row('运行平台', true, env.platform),
-    row('pnpm 路径', env.pnpm_hint ? true : env.platform === 'windows', env.pnpm_hint ? `<code>${env.pnpm_hint}</code>` : (env.platform === 'windows' ? '由 PATH 解析' : '未找到'), env.pnpm_hint || env.platform === 'windows' ? '' : 'Mac/Linux：请先装 Node.js + pnpm（推荐 <code>brew install pnpm</code>）'),
+    row('Node.js', nodeOk, nodeOk ? `${lastNode.node_version} <span class="muted">(${lastNode.source})</span>` : '未检测到', nodeOk ? `<code>${lastNode.node_path}</code>` : '见下方红色提示'),
+    row('pnpm', pnpmOk, pnpmOk ? (lastNode.pnpm_version || '已安装') : '未找到', pnpmOk ? `<code>${lastNode.pnpm_path}</code>` : '推荐：<code>npm i -g pnpm</code>（先有 node）'),
     row('node_modules', env.node_modules_installed, env.node_modules_installed ? '已安装' : '未安装', env.node_modules_installed ? '' : '点上方「一键准备测试环境」'),
     row('Playwright 浏览器', env.playwright_installed, env.playwright_installed ? '已就绪' : '未安装', env.playwright_installed ? '' : '点上方「一键准备测试环境」'),
-    row('.env.local', env.env_local_exists, env.env_local_exists ? '已配置' : '缺失', env.env_local_exists ? '' : '从 <code>.env.example</code> 复制并填测试账号'),
     row('登录缓存', env.auth_exists, env.auth_exists ? '.auth/admin.json 已有' : '首次运行会自动登录'),
     row('综合报告', env.has_reports, env.has_reports ? 'reports/index.html 已存在' : '还没跑过'),
   ].join('');
@@ -64,6 +69,41 @@ async function loadEnv() {
     ind.style.color = ready ? 'var(--success)' : depsReady ? 'var(--warn)' : 'var(--danger)';
   }
 }
+
+// ---------- Node 环境卡片 ----------
+function renderNodeCard() {
+  const card = $('#no-node-card');
+  if (!card) return;
+  const found = lastNode && lastNode.node_found;
+  card.style.display = found ? 'none' : '';
+  if (found) return;
+  const hasVersions = lastNode && lastNode.nvm_versions && lastNode.nvm_versions.length > 0;
+  $('#nvm-suggest').style.display = hasVersions ? '' : 'none';
+  if (hasVersions) {
+    $('#nvm-versions-list').innerHTML = lastNode.nvm_versions
+      .map((v) => `<li><code>${v.name}</code> — <span class="muted">${v.path}</span></li>`)
+      .join('');
+  }
+}
+
+$('#btn-open-node-site')?.addEventListener('click', async () => {
+  const url = (lastNode && lastNode.download_url) || 'https://nodejs.org/zh-cn/download';
+  try { await invoke('open_external_url', { url }); } catch (e) { alert(String(e)); }
+});
+
+$('#btn-recheck-node')?.addEventListener('click', async () => {
+  await loadEnv();
+  await loadProjectRootCard();
+});
+
+// 所有 data-ext-url 链接
+document.addEventListener('click', async (e) => {
+  const a = e.target.closest && e.target.closest('[data-ext-url]');
+  if (!a) return;
+  e.preventDefault();
+  const url = a.dataset.extUrl;
+  try { await invoke('open_external_url', { url }); } catch (err) { alert(String(err)); }
+});
 
 // ---------- 日志控制台 ----------
 const consoleEl = $('#console');
@@ -289,26 +329,48 @@ function runSpecByPath(absPath, headed = false) {
 }
 
 // ---------- 首次环境向导：一键 install + install-browsers ----------
-async function startSetup() {
+async function startSetup(options) {
+  const opts = options || {};
   if (currentJob) {
     alert(`任务「${currentJob}」还在跑，请等结束或点停止。`);
     return;
   }
+
+  // 修复安装：先清掉 node_modules
+  if (opts.clean) {
+    const ok = confirm('将删除项目下的 node_modules 再重装。继续？');
+    if (!ok) return;
+    try {
+      appendLog('status', '清理 node_modules…');
+      await invoke('wipe_node_modules');
+      appendLog('status', 'node_modules 已清理');
+    } catch (e) {
+      appendLog('error', '清理失败：' + String(e));
+      return;
+    }
+  }
+
+  // 保证 .npmrc 存在，规避 Windows FS 问题（不覆盖已有 .npmrc）
+  try {
+    const msg = await invoke('ensure_npmrc');
+    appendLog('status', msg);
+  } catch (e) {
+    appendLog('error', '写 .npmrc 失败：' + String(e));
+  }
+
   currentJob = 'setup';
   jobStatus.textContent = '运行中';
   jobStatus.className = 'pill pill-running';
   btnStop.disabled = false;
   enableAllActions(false);
-  // 切到 Run 面板可以看到流式日志
   $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === 'run'));
   $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === 'run'));
 
-  const steps = [];
-  if (!lastEnv || !lastEnv.node_modules_installed) {
-    steps.push({ label: '安装 JS 依赖 (pnpm install)', args: ['install'] });
-  }
-  // 浏览器层永远保险跑一次（幂等 — 已装过 Playwright 会直接跳过）
-  steps.push({ label: '安装 Playwright 浏览器 (chromium)', args: ['install-browsers'] });
+  // 始终两步都跑；pnpm install / install-browsers 都是幂等的
+  const steps = [
+    { label: '安装 JS 依赖 (pnpm install)', args: ['install'] },
+    { label: '安装 Playwright 浏览器 (chromium)', args: ['install-browsers'] },
+  ];
 
   try {
     await invoke('run_pnpm_chain', { args: { job: 'setup', steps } });
@@ -322,7 +384,8 @@ async function startSetup() {
   }
 }
 
-$('#btn-setup').addEventListener('click', startSetup);
+$('#btn-setup').addEventListener('click', () => startSetup());
+$('#btn-setup-clean').addEventListener('click', () => startSetup({ clean: true }));
 
 // 绑定所有 data-open（打开本地文件/目录）
 $$('button[data-open]').forEach((btn) => {
@@ -493,6 +556,16 @@ async function loadProjectRootCard() {
   try {
     const has = await invoke('template_available');
     $('#template-row').style.display = has ? '' : 'none';
+    if (has) {
+      const destInput = $('#template-dest');
+      if (!destInput.value || !destInput.dataset.touched) {
+        try {
+          const def = await invoke('default_template_dest');
+          destInput.value = def;
+          destInput.placeholder = def;
+        } catch {}
+      }
+    }
   } catch {
     $('#template-row').style.display = 'none';
   }
@@ -546,13 +619,41 @@ $('#btn-clear-proj').addEventListener('click', async () => {
   }
 });
 
+$('#template-dest')?.addEventListener('input', (e) => {
+  e.target.dataset.touched = '1';
+});
+
+$('#btn-pick-template-dest')?.addEventListener('click', async () => {
+  const cur = $('#template-dest').value || '';
+  const p = await pickDirectory(cur);
+  if (p) {
+    $('#template-dest').value = p;
+    $('#template-dest').dataset.touched = '1';
+  }
+});
+
+$('#btn-reset-template-dest')?.addEventListener('click', async () => {
+  try {
+    const def = await invoke('default_template_dest');
+    $('#template-dest').value = def;
+    $('#template-dest').dataset.touched = '';
+  } catch (e) { alert(String(e)); }
+});
+
 $('#btn-extract-template').addEventListener('click', async () => {
   const hint = $('#template-hint');
+  const dest = $('#template-dest').value.trim();
+  const force = $('#template-force').checked;
   hint.textContent = '解压中（第一次约 1–3 秒）…'; hint.className = 'muted';
   try {
-    const path = await invoke('extract_template', { force: false });
+    const path = await invoke('extract_template', {
+      destDir: dest || null,
+      force,
+    });
     hint.textContent = '已解压到：' + path;
     hint.className = 'muted saved-flash';
+    // 解压后重置"强制覆盖"，避免下一次误点
+    $('#template-force').checked = false;
     // 使用它作为项目根
     await loadEnv();
     await loadEnvForm();
