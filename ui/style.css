@@ -254,10 +254,17 @@ button.danger {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  /* 一条 li 内边距 8+8 + 内容 ~30 ≈ 46px；5 条 + 4 个 6px gap ≈ 254px。
+     再加一点呼吸空间和滚动条空间，超过 5 条出现垂直滚动。 */
+  max-height: 264px;
+  overflow-y: auto;
+  /* 滚动条挤占 li 行内空间，给点右内边距让按钮不贴边 */
+  padding-right: 4px;
 }
 .recent-list li {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  /* meta + run-status + 3 个按钮 */
+  grid-template-columns: 1fr auto auto auto auto;
   gap: 10px;
   align-items: center;
   padding: 8px 12px;
@@ -271,6 +278,92 @@ button.danger {
 }
 .recent-list .meta .file { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .recent-list .meta .when { font-size: 11px; color: var(--muted); }
+
+/* 批量试跑用：每行右侧的状态指示，平时无字、运行中 ▶、成功 ✓、失败 ✗ */
+.recent-list .run-status {
+  display: inline-block;
+  min-width: 18px;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  color: var(--muted);
+}
+.recent-list .run-status[data-status="running"] { color: var(--warn); }
+.recent-list .run-status[data-status="ok"] { color: var(--success); }
+.recent-list .run-status[data-status="fail"] { color: var(--danger); }
+
+/* ---------- 模态框（用于"导入"按钮的路径/类型选择） ---------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.modal-overlay[hidden] { display: none; }
+.modal {
+  background: var(--surface);
+  color: var(--text);
+  padding: 22px 24px;
+  border-radius: 8px;
+  min-width: 480px;
+  max-width: 640px;
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+}
+.modal h3 { margin: 0 0 14px; }
+.modal .form-row { margin-bottom: 12px; }
+.modal .modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+.modal code {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+
+/* 批量导入预览列表 —— 限高 + 滚动，每行 file → sop 标签 */
+.batch-preview {
+  list-style: none;
+  padding: 6px 8px;
+  margin: 4px 0 0;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.batch-preview li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 12px;
+  align-items: center;
+  padding: 3px 4px;
+}
+.batch-preview .filename {
+  font-family: "JetBrains Mono", Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.batch-preview .sop-tag {
+  font-weight: 600;
+  color: var(--success);
+}
+.batch-preview .sop-tag.unmatched {
+  color: var(--muted);
+  font-weight: 400;
+  font-style: italic;
+}
 .spec-opts { flex-wrap: wrap; gap: 14px; }
 .check { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer; }
 .check input[type="checkbox"] { margin: 0; }

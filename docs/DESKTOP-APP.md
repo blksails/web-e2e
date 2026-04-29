@@ -131,7 +131,7 @@ pnpm desktop:build              # 打包分发（Windows .msi / macOS .dmg / Lin
   点「启动 codegen 录制」。Chromium 会带着登录态打开；你像平常一样点业务流程，
   codegen 会把动作写成 `<录制目录>/<name>-<时间戳>.spec.ts`。录完会自动出现在上面"最近录制"里
 - **导入**：选择刚录的那个文件（对话框默认定位到录制目录），挑 SOP 分组（sop1~sop5），点「导入」。
-  底层调 `pnpm import -- --file ... --sop ... --outDir <导入目录>`
+  底层调 `pnpm import:rec -- --file ... --sop ... --outDir <导入目录>`
 
 ### 报告
 - **综合仪表盘**：`reports/index.html`，覆盖率 / 耗时 / 建议
@@ -243,4 +243,4 @@ apps/web-e2e/
 | 给不会命令行的测试专员用 | 桌面端 |
 
 桌面端生成的所有产物（reports/、recordings/、test-results/）和 CLI 完全一致；
-测试专员录完后，工程师可以照常 `pnpm import` 接手审查。
+测试专员录完后，工程师可以照常 `pnpm import:rec` 接手审查。

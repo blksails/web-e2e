@@ -755,6 +755,10 @@ async fn run_pnpm(app: AppHandle, args: RunArgs) -> Result<(), String> {
 struct ChainStep {
     label: String,
     args: Vec<String>,
+    /// 每个 step 可以单独带 env（比如批量跑录制时每个文件 E2E_SPEC_DIR / E2E_FORCE_ANON 都不同）。
+    /// None 时 spawn_pnpm 不附加额外 env，行为与之前一致。
+    #[serde(default)]
+    env: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -787,7 +791,7 @@ async fn run_pnpm_chain(app: AppHandle, args: ChainArgs) -> Result<(), String> {
                     line: format!("[{}/{}] {}", i + 1, total, step.label),
                 },
             );
-            match spawn_pnpm(&app_bg, &job_id, &step.args, None).await {
+            match spawn_pnpm(&app_bg, &job_id, &step.args, step.env.as_ref()).await {
                 Ok(s) if s.success() => { /* 继续下一步 */ }
                 Ok(s) => {
                     emit_final(&app_bg, &job_id, false, s.code());
@@ -877,6 +881,27 @@ fn extract_title(path: &Path) -> Option<String> {
         }
     }
     None
+}
+
+/// 读取一个 `.spec.ts` 的文本内容，前端用来做"是否含登录行为"的轻量检测。
+/// 限制：只允许 .spec.ts 后缀，且大小 <= 1 MiB —— 避免把任意文件经 IPC 抽出。
+/// 路径可绝对（用户在项目外的录制）也可项目相对。
+#[tauri::command]
+fn read_spec_text(path: String) -> Result<String, String> {
+    let p = if Path::new(&path).is_absolute() {
+        PathBuf::from(&path)
+    } else {
+        project_root().join(&path)
+    };
+    let lower = p.to_string_lossy().to_lowercase();
+    if !lower.ends_with(".spec.ts") {
+        return Err("仅支持 .spec.ts 文件".into());
+    }
+    let meta = std::fs::metadata(&p).map_err(|e| e.to_string())?;
+    if meta.len() > 1024 * 1024 {
+        return Err("文件超过 1 MiB，已拒绝读取".into());
+    }
+    std::fs::read_to_string(&p).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1139,7 +1164,11 @@ fn list_recordings(limit: Option<usize>) -> Result<Vec<RecordingEntry>, String> 
 
     // 按 mtime 倒序
     entries.sort_by(|a, b| b.modified_ms.cmp(&a.modified_ms));
-    let take = limit.unwrap_or(10).min(entries.len());
+    // None / Some(0) → 返回全部；Some(n) → 取前 n
+    let take = match limit {
+        Some(0) | None => entries.len(),
+        Some(n) => n.min(entries.len()),
+    };
     entries.truncate(take);
     Ok(entries)
 }
@@ -1504,6 +1533,7 @@ pub fn run() {
             active_jobs,
             list_docs,
             read_doc,
+            read_spec_text,
             open_in_shell,
             env_info,
             read_env_local,

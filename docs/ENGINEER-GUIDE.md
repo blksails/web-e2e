@@ -68,7 +68,7 @@ apps/web-e2e/
 │   └── suggestion-reporter.ts  # 自定义 reporter：生成 suggestions.json + trends.jsonl
 ├── scripts/
 │   ├── record.ts             # `pnpm record` 入口：启动 codegen
-│   ├── import-recording.ts   # `pnpm import` 入口：把录制规范化
+│   ├── import-recording.ts   # `pnpm import:rec` 入口：把录制规范化
 │   ├── generate-report.ts    # 综合报告生成
 │   ├── preflight.ts          # 测试前自检：防 .only、sleep、绝对 URL
 │   └── __tests__/            # node:test 单测（pnpm test:unit）

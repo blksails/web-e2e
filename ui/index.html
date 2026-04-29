@@ -262,16 +262,23 @@
       <section class="view" data-view="record">
         <header class="view-header">
           <h1>录制与导入</h1>
-          <p class="muted">等同于手动跑 <code>pnpm record</code> / <code>pnpm import</code>。</p>
+          <p class="muted">等同于手动跑 <code>pnpm record</code> / <code>pnpm import:rec</code>。</p>
         </header>
 
         <!-- 最近录制：快速回放 -->
         <div class="card recent-card" id="recent-card" style="display:none">
           <div class="inline" style="justify-content:space-between">
             <h3 class="tight">最近录制</h3>
-            <button id="btn-refresh-recent">刷新</button>
+            <div class="inline" style="gap:6px">
+              <label class="check" title="带浏览器窗口可见地依次跑">
+                <input type="checkbox" id="batch-run-headed" />带窗口
+              </label>
+              <button id="btn-batch-run" title="依次试跑列表里全部录制；行尾显示 ✓ / ✗ 状态">批量试跑</button>
+              <button id="btn-batch-import" title="按文件名前缀（TC-1-... → sop1）批量导入到 tests/recorded/">批量导入</button>
+              <button id="btn-refresh-recent">刷新</button>
+            </div>
           </div>
-          <p class="muted tight">录制完成后不用导入也能立即试跑；下面列出 <code id="recent-dir-label">recordings/</code> 最近 10 条。</p>
+          <p class="muted tight">录制完成后不用导入也能立即试跑；下面列出 <code id="recent-dir-label">recordings/</code> 全部录制文件，<strong>按文件名自然顺序</strong>（TC-1 → TC-2 → TC-10）排列，超过 5 条出现滚动条。批量试跑 / 批量导入都按这个顺序执行。</p>
           <ul class="recent-list" id="recent-list"></ul>
           <p class="muted tight"><strong>提示</strong>：立即试跑用的是衍生配置（<code>playwright.any.config.ts</code>），只加载登录态，不保证过 tenantGuard。要正式入库仍走「导入」再跑 <code>test:recorded</code>。</p>
         </div>
@@ -391,6 +398,61 @@
         </div>
       </section>
     </main>
+
+    <!-- 批量导入：按文件名前缀（TC-N-...）自动匹配 SOP 分组 -->
+    <div id="import-batch-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="import-batch-title">
+        <h3 id="import-batch-title">批量导入录制</h3>
+        <p class="muted tight">规则：文件名 <code>TC-&lt;N&gt;-...</code> 第一段数字映射到 <code>sop&lt;N&gt;</code>（不区分大小写）。匹配不上的文件不带 SOP 标签导入。</p>
+        <div class="form-row">
+          <label>导入目标目录</label>
+          <div class="inline">
+            <input id="import-batch-dir" placeholder="tests/recorded" />
+            <button id="import-batch-pick-dir">选目录…</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>文件 → SOP 映射预览（<span id="import-batch-count">0</span> 个）</label>
+          <ul id="import-batch-preview" class="batch-preview"></ul>
+        </div>
+        <div class="modal-actions">
+          <button id="import-batch-cancel">取消</button>
+          <button id="import-batch-confirm" class="primary">确认批量导入</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 导入录制：弹窗，由"最近录制"卡片每行的"导入"按钮触发 -->
+    <div id="import-modal" class="modal-overlay" hidden>
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="import-modal-title">
+        <h3 id="import-modal-title">导入录制</h3>
+        <div class="form-row">
+          <label>录制文件</label>
+          <code id="import-modal-file" class="muted">—</code>
+        </div>
+        <div class="form-row">
+          <label>导入目标目录 <span class="muted">（规范化后的 spec 落到这里）</span></label>
+          <div class="inline">
+            <input id="import-modal-dir" placeholder="tests/recorded" />
+            <button id="import-modal-pick-dir">选目录…</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <label>SOP 分组（导入类型）</label>
+          <select id="import-modal-sop">
+            <option value="sop1">sop1</option>
+            <option value="sop2">sop2</option>
+            <option value="sop3">sop3</option>
+            <option value="sop4">sop4</option>
+            <option value="sop5">sop5</option>
+          </select>
+        </div>
+        <div class="modal-actions">
+          <button id="import-modal-cancel">取消</button>
+          <button id="import-modal-confirm" class="primary">确认导入</button>
+        </div>
+      </div>
+    </div>
 
     <script src="./app.js"></script>
   </body>

@@ -121,10 +121,47 @@ function appendLog(kind, line) {
   consoleEl.scrollTop = consoleEl.scrollHeight;
 }
 
+// 批量试跑状态机：跟踪 chain 推进，把每行录制的 ✓/✗ 实时写到 .run-status 上
+const batchRunState = {
+  active: false,
+  paths: [],   // 启动时的文件路径快照（按 chain 步骤顺序）
+  current: -1, // 当前正在跑的 step 索引（0-based）；-1 = 还没开始
+};
+function setRowStatus(path, status) {
+  if (!path) return;
+  // 用属性比较查行，避免 querySelector 处理路径里的特殊字符（: \ / 等）
+  const li = $$('#recent-list li').find((el) => el.dataset.path === path);
+  if (!li) return;
+  const span = li.querySelector('.run-status');
+  if (!span) return;
+  span.dataset.status = status;
+  span.textContent = status === 'running' ? '▶' : status === 'ok' ? '✓' : status === 'fail' ? '✗' : '';
+}
+function clearAllRowStatuses() {
+  $$('#recent-list .run-status').forEach((sp) => { sp.dataset.status = ''; sp.textContent = ''; });
+}
+
 listen('job-log', (event) => {
   const { job, kind, line } = event.payload;
   if (currentJob && job !== currentJob) return; // 只显示当前关注的任务
   appendLog(kind, line);
+
+  // === 批量试跑：实时更新行状态 ===
+  // run_pnpm_chain 在每步开始时 emit `[i/total] <label>`。chain 只有在前一步成功才会推进，
+  // 所以"看到下一步开始" ⇒ "前一步成功"。这样不用改 Rust，纯靠现有事件流就能反推 ✓。
+  if (batchRunState.active && job === 'batch-run' && kind === 'status') {
+    const m = /^\[(\d+)\/\d+\]/.exec(line);
+    if (m) {
+      const newIdx = Number(m[1]) - 1;
+      // 把上一个 current 到 newIdx 之间的所有步骤都打 ✓（通常就一步，防御性多步）
+      for (let i = Math.max(0, batchRunState.current); i < newIdx; i++) {
+        setRowStatus(batchRunState.paths[i], 'ok');
+      }
+      batchRunState.current = newIdx;
+      setRowStatus(batchRunState.paths[newIdx], 'running');
+    }
+  }
+
   if (kind === 'status' && line.startsWith('任务')) {
     const success = line.includes('成功');
     jobStatus.textContent = success ? '成功' : line.includes('退出码') ? '结束' : '空闲';
@@ -133,6 +170,19 @@ listen('job-log', (event) => {
     enableAllActions(true);
     const finishedJob = currentJob;
     currentJob = null;
+    // 批量试跑收尾：成功 → 当前及之后全打 ✓；失败 → 当前打 ✗
+    if (finishedJob === 'batch-run' && batchRunState.active) {
+      if (success) {
+        for (let i = Math.max(0, batchRunState.current); i < batchRunState.paths.length; i++) {
+          setRowStatus(batchRunState.paths[i], 'ok');
+        }
+      } else if (batchRunState.current >= 0) {
+        setRowStatus(batchRunState.paths[batchRunState.current], 'fail');
+      }
+      batchRunState.active = false;
+      batchRunState.paths = [];
+      batchRunState.current = -1;
+    }
     // 特殊任务结束后刷新相关 UI
     if (finishedJob === 'setup' || (finishedJob || '').startsWith('import:')) {
       loadEnv();
@@ -226,9 +276,56 @@ function isUnderTests(relPath) {
   return p.startsWith('tests/');
 }
 
+// 登录行为检测 —— 必须与 scripts/detect-login.ts 的 LOGIN_SIGNALS / KEEP_AUTH_MARKER 保持一致。
+// 用途：选中某个测试文件后，若内容含登录行为，强制走 test:any 路由（playwright.any.config.ts
+// 在 config 加载时会清空 storageState 并跳过 globalSetup），避免预登录态污染登录流程测试。
+const LOGIN_KEEP_AUTH_MARKER = /\/\/\s*@keep-auth\b/;
+const LOGIN_SIGNALS = [
+  /page\.goto\(\s*[`'"][^`'"]*\/login\b/,
+  /getByRole\(\s*['"`]button['"`]\s*,\s*\{\s*name\s*:\s*['"`/](?![^'"`,)]*退出)[^'"`,)]*登录/,
+  /getByLabel\(\s*[`'"]密码/,
+  /getByRole\(\s*['"`]textbox['"`]\s*,\s*\{\s*name\s*:\s*['"`/][^'"`,)]*邮箱/,
+  /getByRole\(\s*['"`]textbox['"`]\s*,\s*\{\s*name\s*:\s*['"`/][^'"`,)]*手机号/,
+];
+function specSourceContainsLogin(source) {
+  if (!source) return false;
+  if (LOGIN_KEEP_AUTH_MARKER.test(source)) return false;
+  return LOGIN_SIGNALS.some((re) => re.test(source));
+}
+
+// 缓存当前 #spec-file 的检测结果。null = 还没检测/路径为空；boolean = 检测完。
+let lastSpecLoginDetected = null;
+let lastSpecDetectedFor = '';
+async function detectLoginForCurrentSpec() {
+  const file = $('#spec-file').value.trim();
+  if (!file) {
+    lastSpecLoginDetected = null;
+    lastSpecDetectedFor = '';
+    return null;
+  }
+  if (file === lastSpecDetectedFor && lastSpecLoginDetected !== null) {
+    return lastSpecLoginDetected;
+  }
+  try {
+    const text = await invoke('read_spec_text', { path: file });
+    lastSpecLoginDetected = specSourceContainsLogin(text);
+  } catch {
+    // 读取失败（不存在/非 spec/超大）：当作未检测到，让后端去走默认路径
+    lastSpecLoginDetected = false;
+  }
+  lastSpecDetectedFor = file;
+  return lastSpecLoginDetected;
+}
+
 /** 构建运行测试文件所需的 pnpm args + env。
- * 在 tests/ 下 → `pnpm test -- <relpath>` （用主配置，完整 reporters）
- * 不在 tests/ 下 → `pnpm test:any -- <relpath>` + E2E_SPEC_DIR=<dir>（衍生配置，保登录）
+ * 默认路由：
+ *   - 在 tests/ 下 → `pnpm test -- <relpath>` （用主配置，完整 reporters / tenantGuard）
+ *   - 不在 tests/ 下 → `pnpm test:any -- <relpath>` + E2E_SPEC_DIR=<dir>（衍生配置）
+ *
+ * 例外：检测到登录行为且文件不是 *.anon.spec.ts 命名时，强制走 test:any —— 该路径
+ * 的 playwright.any.config.ts 会在 config 加载时清空 storageState 并跳过 globalSetup，
+ * 避免预登录态污染登录流程测试。tests/ 下 *.anon.spec.ts 走主配置即可（chromium-anonymous
+ * project 已经处理）。
  */
 function buildSpecArgs() {
   const file = $('#spec-file').value.trim();
@@ -236,8 +333,12 @@ function buildSpecArgs() {
   const rel = relToProjectRoot(file);
   const norm = normalizeSeparators(rel);
   const underTests = isUnderTests(norm);
+  const isAnonNamed = /\.anon\.spec\.ts$/i.test(norm);
+  const loginDetected = lastSpecLoginDetected === true;
+  const forceAnyForLogin = loginDetected && !isAnonNamed;
+  const useAnyConfig = !underTests || forceAnyForLogin;
 
-  const args = underTests ? ['test', '--', norm] : ['test:any', '--', norm];
+  const args = useAnyConfig ? ['test:any', '--', norm] : ['test', '--', norm];
   const headed = $('#spec-headed').checked;
   if (headed) args.push('--headed');
   if ($('#spec-ui').checked) args.push('--ui');
@@ -246,7 +347,7 @@ function buildSpecArgs() {
   if (grep) { args.push('--grep', grep); }
 
   const env = {};
-  if (!underTests) {
+  if (useAnyConfig) {
     // E2E_SPEC_DIR 只需目录即可，playwright testDir 设成此
     const slash = norm.lastIndexOf('/');
     const dir = slash >= 0 ? norm.slice(0, slash) : '.';
@@ -255,10 +356,24 @@ function buildSpecArgs() {
   // 保险：除 CLI --headed 外，同时用 env 让 playwright.any.config 覆盖 headless + slowMo
   // （CLI --headed 在某些 pnpm/shell 组合里可能被吞，env 是更可靠的入口）
   if (headed) env.E2E_SPEC_HEADED = '1';
-  return { args, rel: norm, underTests, env };
+  // 前端已经检测到登录行为时，给 any-config 一个硬覆盖通道，避免后端
+  // process.argv / cwd 解析在某些 pnpm 版本下有偏差导致回扫错过该文件。
+  if (forceAnyForLogin) env.E2E_FORCE_ANON = '1';
+  return {
+    args,
+    rel: norm,
+    underTests,
+    useAnyConfig,
+    forceAnyForLogin,
+    loginDetected,
+    isAnonNamed,
+    env,
+  };
 }
 
-function refreshSpecPreview() {
+async function refreshSpecPreview() {
+  // 检测当前选中文件是否含登录行为；结果会被 buildSpecArgs 读到。
+  await detectLoginForCurrentSpec();
   const built = buildSpecArgs();
   if (!built) { $('#spec-cmd-preview').textContent = ''; $('#spec-warn').textContent = ''; return; }
   const envStr = Object.keys(built.env).length
@@ -266,7 +381,13 @@ function refreshSpecPreview() {
     : '';
   $('#spec-cmd-preview').textContent = '$ ' + envStr + 'pnpm ' + built.args.map((a) => a.includes(' ') ? `"${a}"` : a).join(' ');
   const hint = $('#spec-warn');
-  if (!built.underTests) {
+  if (built.forceAnyForLogin) {
+    hint.innerHTML = '检测到<strong>登录行为</strong> —— 已切换到 <code>playwright.any.config.ts</code>，将清空 storageState 并跳过预登录。在脚本里加 <code>// @keep-auth</code> 可强制保留登录态。';
+    hint.style.color = 'var(--warn)';
+  } else if (built.loginDetected && built.isAnonNamed) {
+    hint.innerHTML = '检测到登录行为；文件名是 <code>.anon.spec.ts</code>，主配置的 chromium-anonymous project 会自动清空 storageState。';
+    hint.style.color = 'var(--muted)';
+  } else if (!built.underTests) {
     hint.innerHTML = '使用衍生配置 <code>playwright.any.config.ts</code> 直接跑该文件（加载登录态但不过 tenantGuard）。要正式入库请"导入"后再用主配置跑。';
     hint.style.color = 'var(--muted)';
   } else {
@@ -306,7 +427,9 @@ $('#btn-clear-spec').addEventListener('click', () => {
 });
 $('#spec-grep').addEventListener('input', refreshSpecPreview);
 
-$('#btn-run-spec').addEventListener('click', () => {
+$('#btn-run-spec').addEventListener('click', async () => {
+  // 等检测落停再读 buildSpecArgs，避免用户改完路径立刻点运行时还按旧检测结果走。
+  await detectLoginForCurrentSpec();
   const built = buildSpecArgs();
   if (!built) { alert('请先选择一个测试文件'); return; }
   // 用文件名做 job id，防冲突
@@ -315,13 +438,13 @@ $('#btn-run-spec').addEventListener('click', () => {
 });
 
 /** 公共函数：跑某个 spec 文件（被"最近录制"的"立即试跑"按钮调用） */
-function runSpecByPath(absPath, headed = false) {
+async function runSpecByPath(absPath, headed = false) {
   $('#spec-file').value = absPath;
   $('#spec-headed').checked = !!headed;
   $('#spec-ui').checked = false;
   $('#spec-debug').checked = false;
   $('#spec-grep').value = '';
-  refreshSpecPreview();
+  await refreshSpecPreview();
   const built = buildSpecArgs();
   if (!built) return;
   const base = built.rel.split('/').pop().replace(/\.spec\.ts$/, '');
@@ -434,35 +557,267 @@ function formatSince(ms) {
   return `${d} 天前`;
 }
 
+// 当前最近录制列表的缓存 —— 批量导入 / 批量试跑都直接拿来用，避免重复 IPC 调用
+let lastRecentList = [];
+
+// 自然顺序：TC-1 < TC-2 < TC-10（普通字典序会把 TC-10 排到 TC-2 前面）。
+// 显示 + 批量试跑 + 批量导入都使用这个顺序，保证用户看到的次序就是执行次序。
+function naturalCmp(a, b) {
+  return String(a).localeCompare(String(b), undefined, { numeric: true, sensitivity: 'base' });
+}
+
 async function loadRecentRecordings() {
   const ul = $('#recent-list');
   const card = $('#recent-card');
   try {
-    const list = await invoke('list_recordings', { limit: 10 });
+    // limit 不传 → 后端返回全部录制；CSS 限高 + 滚动让 5 条以上可滚动浏览
+    const raw = await invoke('list_recordings', {});
+    const list = (raw || []).slice().sort((a, b) => naturalCmp(a.name, b.name));
+    lastRecentList = list;
     if (!list || list.length === 0) {
       card.style.display = 'none';
       return;
     }
     card.style.display = '';
     ul.innerHTML = list.map((r) => `
-      <li data-path="${r.path}">
+      <li data-path="${r.path}" data-relative="${r.relative}" data-name="${r.name}">
         <div class="meta">
           <div class="file" title="${r.relative}">${r.name}</div>
           <div class="when">${formatSince(r.modified_ms)} · ${r.relative}</div>
         </div>
+        <span class="run-status" data-status="" title="批量试跑状态"></span>
         <button class="primary" data-action="run">立即试跑</button>
         <button data-action="run-headed" title="带浏览器窗口可见跑">带窗口</button>
+        <button data-action="import" title="规范化后落到 tests/recorded/">导入</button>
       </li>
     `).join('');
     $$('#recent-list li').forEach((li) => {
       const path = li.dataset.path;
       li.querySelector('[data-action="run"]').addEventListener('click', () => runSpecByPath(path, false));
       li.querySelector('[data-action="run-headed"]').addEventListener('click', () => runSpecByPath(path, true));
+      li.querySelector('[data-action="import"]').addEventListener('click', () => openImportModal(path, li.dataset.relative));
     });
   } catch (e) {
     card.style.display = 'none';
   }
 }
+
+// ---------- 导入弹窗 ----------
+function openImportModal(absPath, relativeForLabel) {
+  $('#import-modal-file').textContent = relativeForLabel || absPath;
+  $('#import-modal-file').setAttribute('title', absPath);
+  // 预填导入目录：优先用配置卡片里的当前值，回落到默认 tests/recorded
+  const dirFromCfg = ($('#cfg-imports-dir').value || '').trim();
+  $('#import-modal-dir').value = dirFromCfg || 'tests/recorded';
+  // SOP 分组保留上次选择，不重置
+  $('#import-modal').dataset.file = absPath;
+  $('#import-modal').hidden = false;
+}
+function closeImportModal() {
+  $('#import-modal').hidden = true;
+  $('#import-modal').dataset.file = '';
+}
+$('#import-modal-cancel').addEventListener('click', closeImportModal);
+$('#import-modal').addEventListener('click', (e) => {
+  // 点遮罩关闭，点弹窗内部不关闭
+  if (e.target === $('#import-modal')) closeImportModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#import-modal').hidden) closeImportModal();
+});
+$('#import-modal-pick-dir').addEventListener('click', async () => {
+  const cur = $('#import-modal-dir').value || resolvedImportsAbs || (lastEnv && lastEnv.project_root);
+  const p = await pickDirectory(cur);
+  if (p) $('#import-modal-dir').value = p;
+});
+$('#import-modal-confirm').addEventListener('click', () => {
+  const file = $('#import-modal').dataset.file;
+  if (!file) { closeImportModal(); return; }
+  const dir = ($('#import-modal-dir').value || '').trim();
+  const sop = $('#import-modal-sop').value;
+  if (!dir) { alert('请选择导入目标目录'); return; }
+  closeImportModal();
+  // 用数组形式避免路径含空格被 startJob 的 .split(/\s+/) 切碎
+  startJob(`import:${sop}`, ['import:rec', '--', '--file', file, '--sop', sop, '--outDir', dir]);
+});
+
+// ---------- 批量导入 ----------
+// 文件名前缀（TC-1-... / tc-2-... / Tc_3_...）映射到 sop 编号。第一段数字若 1..5 内
+// 才视为有效（与 #imp-sop / #import-modal-sop 的可选项保持一致），否则返回 null。
+function sopFromRecordingName(name) {
+  const m = /^[Tt][Cc][-_](\d+)/.exec(name || '');
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 1 || n > 5) return null;
+  return `sop${n}`;
+}
+
+function openBatchImportModal() {
+  if (!lastRecentList || lastRecentList.length === 0) {
+    alert('当前录制目录没有可导入的文件');
+    return;
+  }
+  const dirFromCfg = ($('#cfg-imports-dir').value || '').trim();
+  $('#import-batch-dir').value = dirFromCfg || 'tests/recorded';
+  const ul = $('#import-batch-preview');
+  ul.innerHTML = lastRecentList.map((r) => {
+    const sop = sopFromRecordingName(r.name);
+    const tag = sop
+      ? `<span class="sop-tag">${sop}</span>`
+      : `<span class="sop-tag unmatched">未匹配（不带 SOP 标签）</span>`;
+    return `<li><span class="filename" title="${r.relative}">${r.name}</span>${tag}</li>`;
+  }).join('');
+  $('#import-batch-count').textContent = String(lastRecentList.length);
+  $('#import-batch-modal').hidden = false;
+}
+function closeBatchImportModal() { $('#import-batch-modal').hidden = true; }
+
+$('#btn-batch-import').addEventListener('click', openBatchImportModal);
+$('#import-batch-cancel').addEventListener('click', closeBatchImportModal);
+$('#import-batch-modal').addEventListener('click', (e) => {
+  if (e.target === $('#import-batch-modal')) closeBatchImportModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#import-batch-modal').hidden) closeBatchImportModal();
+});
+$('#import-batch-pick-dir').addEventListener('click', async () => {
+  const cur = $('#import-batch-dir').value || resolvedImportsAbs || (lastEnv && lastEnv.project_root);
+  const p = await pickDirectory(cur);
+  if (p) $('#import-batch-dir').value = p;
+});
+
+// ---------- 批量试跑 ----------
+// 依次跑 lastRecentList 里所有录制；每个文件复用 buildSpecArgs 的路由逻辑（test:any /
+// E2E_FORCE_ANON / 登录检测），所以含登录行为的录制会自动清 storageState。带不带浏览器
+// 窗口由 #batch-run-headed 决定。chain 中任何一步失败即停止剩余步骤。
+$('#btn-batch-run').addEventListener('click', async () => {
+  if (!lastRecentList || lastRecentList.length === 0) {
+    alert('当前录制目录没有可试跑的文件');
+    return;
+  }
+  if (currentJob) {
+    alert(`任务「${currentJob}」还在跑，请等结束或点停止。`);
+    return;
+  }
+  const headed = $('#batch-run-headed').checked;
+
+  // 并行预检测每个 spec 是否含登录 —— 决定 E2E_FORCE_ANON 是否要带
+  const loginFlags = await Promise.all(lastRecentList.map(async (r) => {
+    try {
+      const text = await invoke('read_spec_text', { path: r.path });
+      return specSourceContainsLogin(text);
+    } catch {
+      return false;
+    }
+  }));
+
+  const steps = lastRecentList.map((r, i) => {
+    const norm = relToProjectRoot(r.path).replace(/\\/g, '/');
+    const underTests = isUnderTests(norm);
+    const isAnonNamed = /\.anon\.spec\.ts$/i.test(norm);
+    const loginDetected = loginFlags[i];
+    const forceAnyForLogin = loginDetected && !isAnonNamed;
+    const useAnyConfig = !underTests || forceAnyForLogin;
+
+    const args = useAnyConfig ? ['test:any', '--', norm] : ['test', '--', norm];
+    if (headed) args.push('--headed');
+
+    const env = {};
+    if (useAnyConfig) {
+      const slash = norm.lastIndexOf('/');
+      const dir = slash >= 0 ? norm.slice(0, slash) : '.';
+      env.E2E_SPEC_DIR = dir || '.';
+    }
+    if (headed) env.E2E_SPEC_HEADED = '1';
+    if (forceAnyForLogin) env.E2E_FORCE_ANON = '1';
+
+    return {
+      label: r.name + (forceAnyForLogin ? ' [anon]' : ''),
+      args,
+      env: Object.keys(env).length ? env : null,
+    };
+  });
+
+  // 启动 chain：复用 startJob 的 UI 切换逻辑，但显式入 batch-run 状态机
+  batchRunState.active = true;
+  batchRunState.paths = lastRecentList.map((r) => r.path);
+  batchRunState.current = -1;
+  clearAllRowStatuses();
+
+  currentJob = 'batch-run';
+  jobStatus.textContent = '运行中';
+  jobStatus.className = 'pill pill-running';
+  btnStop.disabled = false;
+  enableAllActions(false);
+  if (!$('.view[data-view="run"]').classList.contains('active')) {
+    $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === 'run'));
+    $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === 'run'));
+  }
+  appendLog('status', `批量试跑：${steps.length} 个录制${headed ? '（带窗口）' : '（无头）'}`);
+
+  try {
+    await invoke('run_pnpm_chain', { args: { job: 'batch-run', steps } });
+  } catch (e) {
+    appendLog('error', String(e));
+    jobStatus.textContent = '错误';
+    jobStatus.className = 'pill pill-error';
+    btnStop.disabled = true;
+    enableAllActions(true);
+    currentJob = null;
+    // chain 失败不要把行状态卡死在 running
+    if (batchRunState.active && batchRunState.current >= 0) {
+      setRowStatus(batchRunState.paths[batchRunState.current], 'fail');
+    }
+    batchRunState.active = false;
+    batchRunState.paths = [];
+    batchRunState.current = -1;
+  }
+});
+
+$('#import-batch-confirm').addEventListener('click', async () => {
+  const dir = ($('#import-batch-dir').value || '').trim();
+  if (!dir) { alert('请选择导入目标目录'); return; }
+  if (!lastRecentList || lastRecentList.length === 0) { closeBatchImportModal(); return; }
+  if (currentJob) {
+    alert(`任务「${currentJob}」还在跑，请等结束或点停止。`);
+    return;
+  }
+  closeBatchImportModal();
+
+  // 构造 chain：每个录制一步 import:rec。匹配上 SOP 的就带 --sop，否则不带。
+  const steps = lastRecentList.map((r) => {
+    const sop = sopFromRecordingName(r.name);
+    const args = ['import:rec', '--', '--file', r.path, '--outDir', dir];
+    if (sop) { args.push('--sop', sop); }
+    return {
+      label: sop ? `导入 ${r.name} → ${sop}` : `导入 ${r.name}（无 SOP）`,
+      args,
+    };
+  });
+
+  // 复用 run_pnpm_chain：失败一步即停（与 setup chain 行为一致），成功全部为终态
+  currentJob = 'batch-import';
+  jobStatus.textContent = '运行中';
+  jobStatus.className = 'pill pill-running';
+  btnStop.disabled = false;
+  enableAllActions(false);
+  // 切到运行测试面板看日志
+  if (!$('.view[data-view="run"]').classList.contains('active')) {
+    $$('.nav-item').forEach((b) => b.classList.toggle('active', b.dataset.view === 'run'));
+    $$('.view').forEach((v) => v.classList.toggle('active', v.dataset.view === 'run'));
+  }
+  appendLog('status', `批量导入：共 ${steps.length} 个文件 → ${dir}`);
+  try {
+    await invoke('run_pnpm_chain', { args: { job: 'batch-import', steps } });
+  } catch (e) {
+    appendLog('error', String(e));
+    jobStatus.textContent = '错误';
+    jobStatus.className = 'pill pill-error';
+    btnStop.disabled = true;
+    enableAllActions(true);
+    currentJob = null;
+  }
+});
 
 $('#btn-refresh-recent').addEventListener('click', loadRecentRecordings);
 
@@ -537,7 +892,8 @@ $('#btn-import').addEventListener('click', () => {
   const sop  = $('#imp-sop').value;
   if (!file) { alert('请先选择录制文件'); return; }
   const impDir = ($('#cfg-imports-dir').value || 'tests/recorded').trim();
-  startJob(`import:${sop}`, `import -- --file ${file} --sop ${sop} --outDir ${impDir}`);
+  // 用数组形式传 args，避免路径含空格被 startJob 的 .split(/\s+/) 切碎
+  startJob(`import:${sop}`, ['import:rec', '--', '--file', file, '--sop', sop, '--outDir', impDir]);
 });
 
 // ---------- 项目路径卡片 ----------

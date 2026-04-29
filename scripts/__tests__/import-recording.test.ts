@@ -10,7 +10,12 @@ function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function normalise(source: string, baseUrl: string, tags: string[]): string {
+function normalise(
+  source: string,
+  baseUrl: string,
+  tags: string[],
+  options: { anonymous: boolean } = { anonymous: false },
+): string {
   let out = source;
 
   out = out.replace(
@@ -19,6 +24,13 @@ function normalise(source: string, baseUrl: string, tags: string[]): string {
   );
   if (!out.includes("from '../../fixtures/base'")) {
     out = `import { test, expect } from '../../fixtures/base';\n` + out;
+  }
+
+  if (options.anonymous && !/test\.use\(\s*\{[^}]*storageState/.test(out)) {
+    out = out.replace(
+      /(import \{ test, expect \} from '\.\.\/\.\.\/fixtures\/base';\n)/,
+      `$1\ntest.use({ storageState: { cookies: [], origins: [] } });\n`,
+    );
   }
 
   const absRe = new RegExp(`page\\.goto\\(['"]${escapeRegExp(baseUrl)}(/[^'"]*)?['"]\\)`, 'g');
@@ -34,6 +46,9 @@ function normalise(source: string, baseUrl: string, tags: string[]): string {
     (_m, q, title, destructure) => {
       const tagSuffix = tags.map((t) => `@${t}`).join(' ');
       const newTitle = `${title} ${tagSuffix}`.trim();
+      if (options.anonymous) {
+        return `test(${q}${newTitle}${q}, async ({ ${destructure} }) => {`;
+      }
       const needsGuard = !destructure.includes('tenantGuard');
       const destr = needsGuard
         ? `${destructure.trim()}${destructure.trim() ? ', ' : ''}tenantGuard, page`
@@ -44,6 +59,19 @@ function normalise(source: string, baseUrl: string, tags: string[]): string {
   );
 
   return out;
+}
+
+const KEEP_AUTH_MARKER = /\/\/\s*@keep-auth\b/;
+const LOGIN_SIGNALS: RegExp[] = [
+  /page\.goto\(\s*[`'"][^`'"]*\/login\b/,
+  /getByRole\(\s*['"`](?:button|link)['"`]\s*,\s*\{\s*name\s*:\s*['"`/](?![^'"`,)]*退出)[^'"`,)]*登录/,
+  /getByLabel\(\s*[`'"]密码/,
+  /getByRole\(\s*['"`]textbox['"`]\s*,\s*\{\s*name\s*:\s*['"`/][^'"`,)]*邮箱/,
+  /getByRole\(\s*['"`]textbox['"`]\s*,\s*\{\s*name\s*:\s*['"`/][^'"`,)]*手机号/,
+];
+function specContainsLogin(source: string): boolean {
+  if (KEEP_AUTH_MARKER.test(source)) return false;
+  return LOGIN_SIGNALS.some((re) => re.test(source));
 }
 
 describe('normalise()', () => {
@@ -105,5 +133,78 @@ describe('normalise()', () => {
     const occurrences = (out.match(/tenantGuard/g) || []).length;
     // The original reference stays, and we don't add a second one.
     assert.equal(occurrences, 2);
+  });
+
+  it('skips tenantGuard injection for anonymous specs', () => {
+    const src = [
+      "import { test, expect } from '@playwright/test';",
+      "test('logs in', async ({ page }) => {",
+      "  await page.goto('/login');",
+      '});',
+    ].join('\n');
+    const out = normalise(src, BASE, ['recorded', 'anon'], { anonymous: true });
+    assert.ok(!out.includes('tenantGuard'), `expected no tenantGuard, got:\n${out}`);
+  });
+
+  it('injects empty storageState for anonymous specs', () => {
+    const src = [
+      "import { test, expect } from '@playwright/test';",
+      "test('logs in', async ({ page }) => {",
+      "  await page.goto('/login');",
+      '});',
+    ].join('\n');
+    const out = normalise(src, BASE, ['recorded', 'anon'], { anonymous: true });
+    assert.match(out, /test\.use\(\{ storageState: \{ cookies: \[\], origins: \[\] \} \}\);/);
+  });
+});
+
+describe('specContainsLogin()', () => {
+  it('flags page.goto(/login)', () => {
+    assert.equal(specContainsLogin(`await page.goto('/login');`), true);
+  });
+
+  it('flags absolute /login URLs', () => {
+    assert.equal(specContainsLogin(`await page.goto('https://web-beta.apps.blksails.cn/login');`), true);
+  });
+
+  it('flags 邮箱 textbox + 密码 label combo', () => {
+    const src = [
+      "await page.getByRole('textbox', { name: '邮箱' }).fill('a@b.cn');",
+      "await page.getByLabel('密码', { exact: true }).fill('hunter2');",
+    ].join('\n');
+    assert.equal(specContainsLogin(src), true);
+  });
+
+  it('flags 手机号 (SMS login) textbox', () => {
+    assert.equal(specContainsLogin(`page.getByRole('textbox', { name: '手机号' })`), true);
+  });
+
+  it('flags 登录 button with regex name', () => {
+    assert.equal(specContainsLogin(`page.getByRole('button', { name: /登录/ })`), true);
+  });
+
+  it('flags 登录 link (codegen records nav entry as link, not button)', () => {
+    assert.equal(specContainsLogin(`await page.getByRole('link', { name: '登录' }).click();`), true);
+  });
+
+  it('does not flag 退出登录 (logout) button', () => {
+    assert.equal(specContainsLogin(`page.getByRole('button', { name: '退出登录' })`), false);
+  });
+
+  it('does not flag generic specs', () => {
+    const src = [
+      "await page.goto('/groups');",
+      "await page.getByRole('button', { name: '新建' }).click();",
+    ].join('\n');
+    assert.equal(specContainsLogin(src), false);
+  });
+
+  it('respects the // @keep-auth escape hatch', () => {
+    const src = [
+      "// @keep-auth — verifying the login surface, not exercising it",
+      "await page.goto('/login');",
+      "await expect(page.getByText('登录您的账户')).toBeVisible();",
+    ].join('\n');
+    assert.equal(specContainsLogin(src), false);
   });
 });

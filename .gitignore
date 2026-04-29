@@ -15,3 +15,4 @@ src-tauri/Cargo.lock
 .DS_Store
 Thumbs.db
 .desktop-config.json
+build
