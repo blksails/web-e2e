@@ -581,6 +581,7 @@ async function loadRecentRecordings() {
     card.style.display = '';
     ul.innerHTML = list.map((r) => `
       <li data-path="${r.path}" data-relative="${r.relative}" data-name="${r.name}">
+        <input type="checkbox" class="row-check" title="加入批量试跑" checked />
         <div class="meta">
           <div class="file" title="${r.relative}">${r.name}</div>
           <div class="when">${formatSince(r.modified_ms)} · ${r.relative}</div>
@@ -596,7 +597,9 @@ async function loadRecentRecordings() {
       li.querySelector('[data-action="run"]').addEventListener('click', () => runSpecByPath(path, false));
       li.querySelector('[data-action="run-headed"]').addEventListener('click', () => runSpecByPath(path, true));
       li.querySelector('[data-action="import"]').addEventListener('click', () => openImportModal(path, li.dataset.relative));
+      li.querySelector('.row-check').addEventListener('change', updateSelectAllState);
     });
+    updateSelectAllState();
   } catch (e) {
     card.style.display = 'none';
   }
@@ -686,8 +689,36 @@ $('#import-batch-pick-dir').addEventListener('click', async () => {
   if (p) $('#import-batch-dir').value = p;
 });
 
+// ---------- 行勾选 / 全选 ----------
+// 全选 checkbox 的三态：全勾 = checked；全不勾 = unchecked；部分勾 = indeterminate。
+// 行勾选变化时调一次 updateSelectAllState 同步表头；表头切换时把所有可见行写成同一状态。
+function getRowCheckboxes() {
+  return $$('#recent-list .row-check');
+}
+function updateSelectAllState() {
+  const boxes = getRowCheckboxes();
+  const all = $('#recent-select-all');
+  const label = $('#recent-select-count');
+  if (!all) return;
+  if (boxes.length === 0) {
+    all.checked = false;
+    all.indeterminate = false;
+    if (label) label.textContent = '';
+    return;
+  }
+  const checked = boxes.filter((b) => b.checked).length;
+  all.checked = checked === boxes.length;
+  all.indeterminate = checked > 0 && checked < boxes.length;
+  if (label) label.textContent = `已选 ${checked} / ${boxes.length}`;
+}
+$('#recent-select-all').addEventListener('change', (e) => {
+  const on = e.target.checked;
+  getRowCheckboxes().forEach((b) => { b.checked = on; });
+  updateSelectAllState();
+});
+
 // ---------- 批量试跑 ----------
-// 依次跑 lastRecentList 里所有录制；每个文件复用 buildSpecArgs 的路由逻辑（test:any /
+// 依次跑 lastRecentList 里勾选了的录制；每个文件复用 buildSpecArgs 的路由逻辑（test:any /
 // E2E_FORCE_ANON / 登录检测），所以含登录行为的录制会自动清 storageState。带不带浏览器
 // 窗口由 #batch-run-headed 决定。chain 中任何一步失败即停止剩余步骤。
 $('#btn-batch-run').addEventListener('click', async () => {
@@ -699,10 +730,21 @@ $('#btn-batch-run').addEventListener('click', async () => {
     alert(`任务「${currentJob}」还在跑，请等结束或点停止。`);
     return;
   }
+  // 按表格里的勾选过滤 —— 只跑勾选的行。顺序仍按 lastRecentList（即 UI 显示顺序）。
+  const selectedPaths = new Set(
+    $$('#recent-list li')
+      .filter((li) => li.querySelector('.row-check')?.checked)
+      .map((li) => li.dataset.path),
+  );
+  const selected = lastRecentList.filter((r) => selectedPaths.has(r.path));
+  if (selected.length === 0) {
+    alert('请先勾选要批量试跑的录制');
+    return;
+  }
   const headed = $('#batch-run-headed').checked;
 
   // 并行预检测每个 spec 是否含登录 —— 决定 E2E_FORCE_ANON 是否要带
-  const loginFlags = await Promise.all(lastRecentList.map(async (r) => {
+  const loginFlags = await Promise.all(selected.map(async (r) => {
     try {
       const text = await invoke('read_spec_text', { path: r.path });
       return specSourceContainsLogin(text);
@@ -711,7 +753,7 @@ $('#btn-batch-run').addEventListener('click', async () => {
     }
   }));
 
-  const steps = lastRecentList.map((r, i) => {
+  const steps = selected.map((r, i) => {
     const norm = relToProjectRoot(r.path).replace(/\\/g, '/');
     const underTests = isUnderTests(norm);
     const isAnonNamed = /\.anon\.spec\.ts$/i.test(norm);
@@ -740,7 +782,7 @@ $('#btn-batch-run').addEventListener('click', async () => {
 
   // 启动 chain：复用 startJob 的 UI 切换逻辑，但显式入 batch-run 状态机
   batchRunState.active = true;
-  batchRunState.paths = lastRecentList.map((r) => r.path);
+  batchRunState.paths = selected.map((r) => r.path);
   batchRunState.current = -1;
   clearAllRowStatuses();
 

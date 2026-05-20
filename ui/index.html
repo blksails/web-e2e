@@ -278,7 +278,13 @@
               <button id="btn-refresh-recent">刷新</button>
             </div>
           </div>
-          <p class="muted tight">录制完成后不用导入也能立即试跑；下面列出 <code id="recent-dir-label">recordings/</code> 全部录制文件，<strong>按文件名自然顺序</strong>（TC-1 → TC-2 → TC-10）排列，超过 5 条出现滚动条。批量试跑 / 批量导入都按这个顺序执行。</p>
+          <p class="muted tight">录制完成后不用导入也能立即试跑；下面列出 <code id="recent-dir-label">recordings/</code> 全部录制文件，<strong>按文件名自然顺序</strong>（TC-1 → TC-2 → TC-10）排列，超过 5 条出现滚动条。批量试跑只会跑勾选的行；批量导入仍按全列表执行。</p>
+          <div class="recent-list-head">
+            <label class="check" title="全选 / 取消全选当前列表">
+              <input type="checkbox" id="recent-select-all" />全选
+            </label>
+            <span class="muted tight" id="recent-select-count"></span>
+          </div>
           <ul class="recent-list" id="recent-list"></ul>
           <p class="muted tight"><strong>提示</strong>：立即试跑用的是衍生配置（<code>playwright.any.config.ts</code>），只加载登录态，不保证过 tenantGuard。要正式入库仍走「导入」再跑 <code>test:recorded</code>。</p>
         </div>
