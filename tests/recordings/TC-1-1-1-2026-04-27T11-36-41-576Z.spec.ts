@@ -1,4 +1,4 @@
-import { test, expect } from '../../fixtures/base';
+import { test, expect } from '@playwright/test';
 
 test.use({
   colorScheme: 'light',
@@ -9,8 +9,8 @@ test.use({
   }
 });
 
-test('test @recorded @sop1 @anon', async ({ page  }) => {
-  await page.goto('/login');
+test('test', async ({ page }) => {
+  await page.goto('https://web-beta.apps.blksails.cn/login');
   await page.getByRole('textbox', { name: '邮箱' }).click();
   await page.getByRole('textbox', { name: '邮箱' }).click();
   await page.getByRole('textbox', { name: '邮箱' }).fill('jxk2yk@gmail.com');

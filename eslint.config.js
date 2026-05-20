@@ -56,7 +56,7 @@ export default [
             {
               name: "@playwright/test",
               message:
-                "Recorded specs must import from '../../fixtures/base' so tenantGuard is wired. Re-run `pnpm import:rec -- --file <recording>` to normalise.",
+                "Recorded specs must import from '../../fixtures/base' so tenantGuard is wired. Re-run `pnpm import --file <recording>` to normalise.",
             },
           ],
         },

@@ -18,7 +18,7 @@
     "test:ui": "playwright test --ui --ui-host=127.0.0.1",
     "install-browsers": "playwright install --with-deps chromium",
     "record": "tsx scripts/record.ts",
-    "import:rec": "tsx scripts/import-recording.ts",
+    "import": "tsx scripts/import-recording.ts",
     "report": "playwright show-report reports/playwright-html",
     "report:dashboard": "tsx scripts/generate-report.ts",
     "report:open": "pnpm report:dashboard && start \"\" reports/index.html",
@@ -40,8 +40,5 @@
     "eslint": "^9.20.1",
     "tsx": "^4.20.4",
     "typescript": "^5.7.3"
-  },
-  "dependencies": {
-    "@faker-js/faker": "^10.4.0"
   }
 }

@@ -5,7 +5,7 @@
  *   1. testDir 由环境变量 E2E_SPEC_DIR 动态决定（默认项目根）。这样原始录制
  *      产物（放在 recordings/ 或任意用户目录）也能直接被 playwright 找到并运行。
  *   2. 只启用 chromium project — 跳过 setup project 对 storageState 的依赖，
- *      录制产物不保证经过 tenantGuard 规范化。如果要正式回归，请用 `pnpm import:rec`
+ *      录制产物不保证经过 tenantGuard 规范化。如果要正式回归，请用 `pnpm import`
  *      转到 tests/recorded/ 再跑 `pnpm test:recorded`。
  *   3. 当被运行的 spec 含登录行为，自动清空 storageState 并跳过 globalSetup ——
  *      避免预登录态污染登录流程测试。三层判断（任意一层命中即生效）：

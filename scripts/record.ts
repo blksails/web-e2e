@@ -4,7 +4,7 @@
  *
  * Boots Playwright codegen already authenticated as the E2E admin so testers click through real
  * console flows without re-logging in. Output lands in recordings/<slug>-<timestamp>.spec.ts and
- * can later be normalised via `pnpm import:rec`.
+ * can later be normalised via `pnpm import`.
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -60,7 +60,7 @@ function main(): void {
 
   console.log(`[record] Opening codegen → ${outFile}`);
   console.log('[record] When done, close the Playwright Inspector window. Then run:');
-  console.log(`[record]   pnpm import:rec -- --file "${outFile}"`);
+  console.log(`[record]   pnpm import --file "${outFile}"`);
 
   const child = spawn('pnpm', ['exec', ...pwArgs], { stdio: 'inherit', shell: true });
   child.on('exit', (code) => process.exit(code ?? 0));

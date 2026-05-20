@@ -8,10 +8,7 @@
  *   - if the recording exercises the login flow, write it as `*.anon.spec.ts`,
  *     inject an empty storageState, and skip tenantGuard injection
  *
- * Usage: pnpm import:rec -- --file recordings/my-flow-2026-04-23.spec.ts [--sop sop5]
- *   (NOTE: the script is named `import:rec` rather than `import` because pnpm has a built-in
- *    `pnpm import` command that imports lockfiles from npm/yarn — the collision would route
- *    `pnpm import` to the built-in and trigger ERR_PNPM_LOCKFILE_NOT_FOUND.)
+ * Usage: tsx scripts/import-recording.ts --file recordings/my-flow-2026-04-23.spec.ts [--sop sop5]
  */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -25,7 +22,7 @@ function parseArgs(): { file: string; sop?: string; outDir: string } {
   };
   const file = get('file');
   if (!file) {
-    console.error('Usage: pnpm import:rec -- --file <recording.spec.ts> [--sop sop5] [--outDir tests/recorded]');
+    console.error('Usage: pnpm import --file <recording.spec.ts> [--sop sop5] [--outDir tests/recorded]');
     process.exit(1);
   }
   return {

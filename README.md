@@ -39,7 +39,7 @@ pnpm report:dashboard && open  reports/index.html       # macOS
 | `pnpm test:ui` | Playwright UI Mode（交互调试） |
 | `pnpm test:headed` | 带浏览器跑 |
 | `pnpm record -- --name my-flow --path /settings/members` | 启动 codegen，已登录状态开始录制 |
-| `pnpm import:rec -- --file recordings/xxx.spec.ts --sop sop5` | 把录制结果规范化到 `tests/recorded/` |
+| `pnpm import -- --file recordings/xxx.spec.ts --sop sop5` | 把录制结果规范化到 `tests/recorded/` |
 | `pnpm report:dashboard` | 生成 `reports/index.html` 综合报告 |
 | `pnpm report` | 打开 Playwright 原生 HTML 报告 |
 
